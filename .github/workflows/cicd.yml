@@ -1,0 +1,80 @@
+name: Lint and static checks
+
+jobs:
+  static-analysis:
+    name: Static analysis
+
+    runs-on: ubuntu-latest
+
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - name: Install Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          components: rustfmt,clippy
+          rustflags: ""
+      - name: Install tools
+        uses: taiki-e/install-action@v2
+        with:
+          tool: clippy-sarif,sarif-fmt,cargo-deny
+      - name: Run clippy
+        run: >
+          cargo clippy --no-deps --all-targets --message-format=json -- -D warnings |
+          clippy-sarif |
+          tee clippy-results.sarif |
+          sarif-fmt
+      - name: Run cargo-deny
+        run: cargo deny check
+      - name: Run fmt
+        run: cargo fmt --all --check
+      - name: Upload clippy results
+        uses: github/codeql-action/upload-sarif@v3
+        continue-on-error: true
+        with:
+          sarif_file: clippy-results.sarif
+          category: clippy
+  release:
+    name: Release - ${{ matrix.platform.os-name }}
+    strategy:
+      matrix:
+        platform:
+          - os-name: Linux-x86_64
+            runs-on: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+
+          - os-name: Linux-aarch64
+            runs-on: ubuntu-latest
+            target: aarch64-unknown-linux-musl
+
+          - os-name: Windows-x86_64
+            runs-on: windows-latest
+            target: x86_64-pc-windows-msvc
+
+          - os-name: macOS-x86_64
+            runs-on: macOS-latest
+            target: x86_64-apple-darwin
+
+          - os-name: macOS-arm64
+            runs-on: macOS-latest
+            target: aarch64-apple-darwin
+
+    runs-on: ${{ matrix.platform.runs-on }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - name: Build binary
+        uses: houseabsolute/actions-rust-cross@v1
+        with:
+          command: build
+          target: ${{ matrix.platform.target }}
+          args: "--release"
+          strip: true
+
+      - name: Publish artifacts and release
+        uses: houseabsolute/actions-rust-release@v0
+        with:
+          executable-name: bundle
+          target: ${{ matrix.platform.target }}

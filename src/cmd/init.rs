@@ -1,19 +1,8 @@
-//! Initialisation helpers for `bundle init` and `bundle server init`.
-//!
-//! These two commands scaffold different files:
-//!
-//! | Command              | Creates        | Purpose                              |
-//! |----------------------|----------------|--------------------------------------|
-//! | `bundle init`        | `Bundlefile`   | Define one OCI bundle image          |
-//! | `bundle server init` | `bundle.toml`  | Configure bundles on a server        |
-//!
-//! Both are idempotent — existing files are never overwritten.
 
 use std::path::Path;
 
 use anyhow::{Context, Result};
 
-// ── Templates ─────────────────────────────────────────────────────────────────
 
 const BUNDLEFILE_TEMPLATE: &str = r#"# Bundlefile — defines one OCI bundle image.
 #
@@ -75,7 +64,6 @@ run = ["java", "-Xmx4G", "-jar", "server.jar", "nogui"]
 # sodium     = "ghcr.io/jellysquid/sodium:~0.5"
 "#;
 
-// ── bundle init ───────────────────────────────────────────────────────────────
 
 /// Run `bundle init` in the current working directory.
 ///
@@ -118,7 +106,6 @@ pub fn init_bundlefile(dir: &Path) -> Result<()> {
     Ok(())
 }
 
-// ── bundle server init ────────────────────────────────────────────────────────
 
 /// Run `bundle server init` in the current working directory.
 ///
@@ -165,14 +152,12 @@ pub fn init_server_config(dir: &Path) -> Result<()> {
     Ok(())
 }
 
-// ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use tempfile::TempDir;
 
-    // ── init_bundlefile ───────────────────────────────────────────────────────
 
     #[test]
     fn creates_bundlefile_in_empty_dir() {
@@ -237,7 +222,6 @@ mod tests {
         );
     }
 
-    // ── init_server_config ────────────────────────────────────────────────────
 
     #[test]
     fn creates_bundle_toml_in_empty_dir() {
@@ -328,7 +312,6 @@ mod tests {
         );
     }
 
-    // ── independence ──────────────────────────────────────────────────────────
 
     #[test]
     fn both_inits_can_run_independently_in_same_dir() {

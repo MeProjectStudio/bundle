@@ -2,6 +2,7 @@ pub mod apply;
 pub mod build;
 pub mod diff;
 pub mod init;
+pub mod login;
 pub mod pull;
 pub mod push;
 pub mod run;

@@ -1,29 +1,6 @@
-//! `bundle run` — pull → apply → exec the server's run command.
-//! `bundle run` — the **up** command.  Like `docker compose up`.
-//!
-//! Applies all bundles to the server filesystem (pulling latest versions first),
-//! then replaces the current process with the server command declared in
-//! `bundle.toml`.  This is the primary "start everything" command.
-//!
-//! ## Steps
-//!
-//! 1. **Apply** (`bundle apply`) – pull new bundle versions from the registry,
-//!    extract all layers onto the server FS, merge managed config keys.
-//!    Pass `--no-pull` to skip network access and use whatever is already
-//!    cached.  Pass `--no-apply` to skip this step entirely.
-//! 2. **Exec** – replace the current process with `server.run` from
-//!    `bundle.toml` (e.g. `["java", "-Xmx4G", "-jar", "server.jar", "nogui"]`).
-//!    On Unix this uses `execvp(2)` so the server inherits mcpm's PID and
-//!    signal handlers.  On non-Unix systems a child process is spawned and
-//!    its exit code is forwarded.
-//!
-//! ## Relationship to other commands
-//!
-//! | Command        | Analogue               | What it does                        |
-//! |----------------|------------------------|-------------------------------------|
-//! | `bundle run`   | `docker compose up`    | pull + apply to FS + start server   |
-//! | `bundle apply` | (up without starting)  | pull + apply to FS                  |
-//! | `bundle pull`  | `docker compose pull`  | cache update only, no FS changes    |
+macro_rules! log {
+    ($($t:tt)*) => { crate::progress!("run", $($t)*) };
+}
 
 use anyhow::{bail, Context, Result};
 use std::path::PathBuf;
@@ -31,7 +8,6 @@ use std::path::PathBuf;
 use crate::cmd::apply::{self, ApplyArgs};
 use crate::project::config::ProjectConfig;
 
-// ── Arguments ─────────────────────────────────────────────────────────────────
 
 /// Arguments accepted by `bundle run`.
 #[derive(Debug, Clone, Default)]
@@ -49,7 +25,6 @@ pub struct RunArgs {
     pub server_dir: Option<PathBuf>,
 }
 
-// ── Entry point ───────────────────────────────────────────────────────────────
 
 /// Run `bundle run` — like `docker compose up`.
 ///
@@ -63,15 +38,14 @@ pub async fn run(args: RunArgs) -> Result<()> {
         None => std::env::current_dir().context("getting current directory")?,
     };
 
-    eprintln!("[run] server directory: {}", server_dir.display());
+    log!("server directory: {}", server_dir.display());
 
-    // ── Step 1: Apply (includes pull unless --no-pull) ────────────────────────
     // `bundle apply` owns the pull → FS-extract pipeline.  We pass our
     // --no-pull flag straight through so the user has a single knob.
     if args.no_apply {
-        eprintln!("[run] skipping apply (--no-apply)");
+        log!("skipping apply (--no-apply)");
     } else {
-        eprintln!("[run] step 1/2: apply");
+        log!("step 1/2: apply");
         apply::run(ApplyArgs {
             server_dir: Some(server_dir.clone()),
             dry_run: false,
@@ -81,8 +55,7 @@ pub async fn run(args: RunArgs) -> Result<()> {
         .context("apply step failed (use --no-apply to skip)")?;
     }
 
-    // ── Step 2: Exec the server ───────────────────────────────────────────────
-    eprintln!("[run] step 2/2: exec server");
+    log!("step 2/2: exec server");
 
     // Load the project config for the `server.run` command.
     // We load it again here rather than passing it through so that any changes
@@ -116,7 +89,6 @@ pub async fn run(args: RunArgs) -> Result<()> {
     exec_server(program, argv, &server_dir)
 }
 
-// ── Platform-specific exec ────────────────────────────────────────────────────
 
 /// Replace the current process with the server command on Unix, or spawn-and-
 /// wait on other platforms.
@@ -183,7 +155,6 @@ fn exec_server(program: &str, argv: &[String], server_dir: &std::path::Path) -> 
     Ok(())
 }
 
-// ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {

@@ -29,7 +29,6 @@ use flate2::{read::GzDecoder, write::GzEncoder, Compression};
 use sha2::{Digest as ShaDigest, Sha256};
 use tar::{Archive, Builder, EntryType, Header};
 
-// ── LayerEntry ────────────────────────────────────────────────────────────────
 
 /// A single file or symlink to be packed into an OCI layer tar archive.
 #[derive(Debug, Clone)]
@@ -77,7 +76,6 @@ impl LayerEntry {
     }
 }
 
-// ── PackedLayer ───────────────────────────────────────────────────────────────
 
 /// The result of [`pack_layer`]: a gzip-compressed tar blob with its OCI
 /// content-addressable metadata.
@@ -102,7 +100,6 @@ pub struct PackedLayer {
     pub size: u64,
 }
 
-// ── pack_layer ────────────────────────────────────────────────────────────────
 
 /// Pack a slice of [`LayerEntry`] values into a single gzip-compressed OCI
 /// layer, computing both the `diff_id` and the `digest` in one pass.
@@ -271,7 +268,6 @@ fn gzip_compress(data: &[u8]) -> Result<Vec<u8>> {
     encoder.finish().context("finalising gzip compression")
 }
 
-// ── unpack_layer ──────────────────────────────────────────────────────────────
 
 /// The result of unpacking a layer — records which paths were written.
 #[allow(dead_code)]
@@ -523,7 +519,6 @@ pub fn unpack_layer(compressed: &[u8], dest_dir: &Path) -> Result<UnpackResult> 
     Ok(result)
 }
 
-// ── unpack_layer_dry_run ──────────────────────────────────────────────────────
 
 /// Like [`unpack_layer`], but does **not** write anything to disk.
 ///
@@ -604,7 +599,6 @@ pub fn unpack_layer_dry_run(compressed: &[u8], dest_dir: &Path) -> Result<Unpack
     Ok(result)
 }
 
-// ── collect_directory_entries ─────────────────────────────────────────────────
 
 /// Recursively collect all files under `src_dir` as [`LayerEntry`] values,
 /// prefixing each path with `dest_prefix`.
@@ -677,7 +671,6 @@ pub fn collect_directory_entries(src_dir: &Path, dest_prefix: &str) -> Result<Ve
     Ok(entries)
 }
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
 
 /// Strip a leading `/` from `path` to make it relative.
 #[allow(dead_code)]
@@ -722,14 +715,12 @@ fn write_file(path: &Path, data: &[u8], _mode: u32) -> Result<()> {
     Ok(())
 }
 
-// ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use tempfile::TempDir;
 
-    // ── pack_layer ────────────────────────────────────────────────────────────
 
     #[test]
     fn pack_empty_layer() {
@@ -830,7 +821,6 @@ mod tests {
         );
     }
 
-    // ── diff_id / digest consistency ──────────────────────────────────────────
 
     #[test]
     fn diff_id_is_sha256_of_uncompressed() {
@@ -871,7 +861,6 @@ mod tests {
         assert_eq!(packed1.diff_id, packed2.diff_id);
     }
 
-    // ── OCI whiteout ──────────────────────────────────────────────────────────
 
     #[test]
     fn whiteout_entry_deletes_file() {
@@ -889,7 +878,6 @@ mod tests {
         assert_eq!(result.deleted, vec!["plugins/A/old.yml"]);
     }
 
-    // ── dry-run ───────────────────────────────────────────────────────────────
 
     #[test]
     fn dry_run_does_not_write_files() {
@@ -927,7 +915,6 @@ mod tests {
         );
     }
 
-    // ── normalise_dir_path ────────────────────────────────────────────────────
 
     #[test]
     fn normalise_adds_trailing_slash() {
@@ -944,7 +931,6 @@ mod tests {
         assert_eq!(normalise_dir_path("plugins/A/"), "plugins/A/");
     }
 
-    // ── strip_leading_slash ───────────────────────────────────────────────────
 
     #[test]
     fn strip_leading_slash_with_slash() {

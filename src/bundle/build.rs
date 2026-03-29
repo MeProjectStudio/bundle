@@ -48,7 +48,6 @@ use crate::registry::types::{
 use crate::util::digest::sha256_digest;
 use crate::util::fetch::fetch_url;
 
-// ── Public entry point ────────────────────────────────────────────────────────
 
 /// Build a `LocalImage` from the `Bundlefile` at `bundlefile_path`.
 ///
@@ -80,19 +79,16 @@ pub async fn build(
 /// `root_dir` is the directory used to resolve relative `ADD ./…` and
 /// `COPY ./…` paths; normally the directory containing the Bundlefile.
 pub async fn build_from_parsed(bundlefile: &Bundlefile, root_dir: &Path) -> Result<LocalImage> {
-    // ── Accumulated state across all stages ───────────────────────────────────
     let mut all_layer_descriptors: Vec<Descriptor> = Vec::new();
     let mut all_diff_ids: Vec<String> = Vec::new();
     let mut new_blobs: HashMap<String, Vec<u8>> = HashMap::new();
     let mut accumulated_managed_keys: ManagedKeys = ManagedKeys::new();
     let mut stage_outputs: StageOutputs = Vec::new();
 
-    // ── Process each stage ────────────────────────────────────────────────────
     for (stage_idx, stage) in bundlefile.stages.iter().enumerate() {
         let stage_label = format!("stage {} (FROM {})", stage_idx + 1, stage.from);
         eprintln!("[build] processing {}", stage_label);
 
-        // ── Inherit from base image ───────────────────────────────────────────
         if stage.from.trim().to_lowercase() == SCRATCH_STAGE {
             // FROM scratch — start with zero inherited layers.
             // No registry access, no network call.
@@ -144,7 +140,6 @@ pub async fn build_from_parsed(bundlefile: &Bundlefile, root_dir: &Path) -> Resu
             accumulated_managed_keys = annotations::merge(accumulated_managed_keys, base_keys);
         }
 
-        // ── Collect all ADD + COPY files for this stage ───────────────────────
         // All files from this stage are batched into a single layer.
         // Stage outputs are tracked so that later stages can COPY --from them.
         let mut stage_files: HashMap<String, Vec<u8>> = HashMap::new();
@@ -197,12 +192,10 @@ pub async fn build_from_parsed(bundlefile: &Bundlefile, root_dir: &Path) -> Resu
             all_layer_descriptors.push(descriptor);
         }
 
-        // ── Merge this stage's MANAGE annotations ────────────────────────────
         let stage_keys = annotations::from_manage_directives(&stage.manages);
         accumulated_managed_keys = annotations::merge(accumulated_managed_keys, stage_keys);
     }
 
-    // ── Build OCI image config ────────────────────────────────────────────────
     let image_config = build_image_config(all_diff_ids).context("building OCI image config")?;
     let config_data =
         image_config_to_bytes(&image_config).context("serialising OCI image config")?;
@@ -213,7 +206,6 @@ pub async fn build_from_parsed(bundlefile: &Bundlefile, root_dir: &Path) -> Resu
         &config_digest[..std::cmp::min(19, config_digest.len())]
     );
 
-    // ── Build manifest annotations ────────────────────────────────────────────
     let manifest_annotations: Option<HashMap<String, String>> =
         if accumulated_managed_keys.is_empty() {
             None
@@ -224,7 +216,6 @@ pub async fn build_from_parsed(bundlefile: &Bundlefile, root_dir: &Path) -> Resu
             Some(ann)
         };
 
-    // ── Assemble OCI image manifest via oci-spec builders ────────────────
     // Descriptor::new takes impl Into<Digest>; Sha256Digest (via from_str)
     // satisfies that bound.  Strip the "sha256:" prefix since Sha256Digest
     // represents only the hex portion.
@@ -270,7 +261,6 @@ pub async fn build_from_parsed(bundlefile: &Bundlefile, root_dir: &Path) -> Resu
     })
 }
 
-// ── Stage output tracking ────────────────────────────────────────────────────
 
 /// Tracks each stage's output file tree for `COPY --from=<stage>` resolution.
 ///
@@ -278,7 +268,6 @@ pub async fn build_from_parsed(bundlefile: &Bundlefile, root_dir: &Path) -> Resu
 /// every file written by stage `i`.
 type StageOutputs = Vec<HashMap<String, Vec<u8>>>;
 
-// ── ADD resolution ────────────────────────────────────────────────────────────
 
 /// Resolve an [`AddDirective`] into a list of `(dest_path, bytes)` pairs.
 ///
@@ -343,7 +332,6 @@ async fn fetch_remote(url: &str, explicit_checksum: Option<&str>) -> Result<Vec<
     Ok(data)
 }
 
-// ── COPY resolution ───────────────────────────────────────────────────────────
 
 /// Resolve a [`CopyDirective`] into `(dest_path, bytes)` pairs.
 ///
@@ -456,7 +444,6 @@ fn resolve_stage_ref(stage_ref: &str, all_stages: &[Stage], num_built: usize) ->
     );
 }
 
-// ── ADD entry collection ──────────────────────────────────────────────────────
 
 /// Collect [`LayerEntry`] values for an `ADD <src> <dest>` directive.
 ///
@@ -505,7 +492,6 @@ fn collect_add_entries_for_path(src_path: &Path, dest: &str) -> Result<Vec<Layer
     }
 }
 
-// ── Base image inheritance ────────────────────────────────────────────────────
 
 /// Fetch the layer descriptors, diff_ids, and managed-keys annotation of an
 /// existing OCI image so that they can be inherited by the current build.
@@ -591,7 +577,6 @@ async fn fetch_base_image_info(
     Ok((manifest.layers().to_vec(), diff_ids, managed_keys))
 }
 
-// ── AsyncVecWriter (used in fetch_base_image_info) ────────────────────────────
 
 struct AsyncVecWriter {
     buf: Vec<u8>,
@@ -629,7 +614,6 @@ impl tokio::io::AsyncWrite for AsyncVecWriter {
     }
 }
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
 
 /// Construct an OCI layer descriptor from a [`PackedLayer`].
 fn make_layer_descriptor(packed: &PackedLayer) -> Descriptor {
@@ -643,7 +627,6 @@ fn make_layer_descriptor(packed: &PackedLayer) -> Descriptor {
     Descriptor::new(MediaType::ImageLayerGzip, packed.size, sha256)
 }
 
-// ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
@@ -705,7 +688,6 @@ mod tests {
         assert!(result.is_err());
     }
 
-    // ── ADD local ─────────────────────────────────────────────────────────────
 
     #[tokio::test]
     async fn build_single_stage_local_add() {
@@ -785,7 +767,6 @@ mod tests {
         // No lock file interaction expected — just verify build succeeds.
     }
 
-    // ── COPY local ────────────────────────────────────────────────────────────
 
     #[tokio::test]
     async fn build_copy_local_behaves_like_add() {
@@ -806,7 +787,6 @@ mod tests {
         assert!(unpack_dir.path().join("plugins/Plugin.jar").exists());
     }
 
-    // ── COPY --from ───────────────────────────────────────────────────────────
 
     #[tokio::test]
     async fn build_copy_from_stage_by_index() {
@@ -866,7 +846,6 @@ mod tests {
         assert!(unpack_dir.path().join("plugins/Plugin.jar").exists());
     }
 
-    // ── MANAGE / annotations ──────────────────────────────────────────────────
 
     #[tokio::test]
     async fn build_manage_sets_annotation() {
@@ -925,7 +904,6 @@ mod tests {
         assert_eq!(managed["plugins/B/config.yml"], vec!["b.key"]);
     }
 
-    // ── ARG substitution ──────────────────────────────────────────────────────
 
     #[tokio::test]
     async fn build_arg_substitution_in_add_dest() {
@@ -965,7 +943,6 @@ mod tests {
         assert!(unpack_dir.path().join("plugins/Plugin-2.0.jar").exists());
     }
 
-    // ── OCI manifest correctness ──────────────────────────────────────────────
 
     #[tokio::test]
     async fn build_config_blob_in_new_blobs() {

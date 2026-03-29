@@ -18,7 +18,6 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
-// ── oci-spec re-exports ───────────────────────────────────────────────────────
 //
 // All OCI image-construction types come from `oci-spec`. Callers import them
 // via `crate::registry::types::*` so the crate boundary is a single import.
@@ -68,7 +67,6 @@ pub fn image_config_to_bytes(config: &ImageConfiguration) -> Result<Vec<u8>> {
         .context("serialising OCI image config to JSON")
 }
 
-// ── LocalImage ────────────────────────────────────────────────────────────────
 
 /// A fully assembled OCI image that has been built locally by `bundle build`.
 ///
@@ -123,7 +121,6 @@ impl LocalImage {
     }
 }
 
-// ── LocalCache ────────────────────────────────────────────────────────────────
 
 /// Filesystem cache for OCI blobs and manifests.
 ///
@@ -163,7 +160,6 @@ impl LocalCache {
         Ok(LocalCache { base_dir: base })
     }
 
-    // ── blob helpers ─────────────────────────────────────────────────────────
 
     fn blob_path(&self, digest: &str) -> PathBuf {
         // digest is "sha256:<hex>" — strip the prefix for the filename.
@@ -208,7 +204,6 @@ impl LocalCache {
         self.blob_path(digest).exists()
     }
 
-    // ── manifest helpers ─────────────────────────────────────────────────────
 
     fn manifest_path(&self, image_ref: &str) -> PathBuf {
         // Escape characters that are invalid in filenames.
@@ -273,7 +268,6 @@ impl LocalCache {
         self.manifest_path(image_ref).exists()
     }
 
-    // ── built-image helpers ───────────────────────────────────────────────────
 
     fn built_dir(&self) -> PathBuf {
         self.base_dir.join("built")
@@ -362,7 +356,6 @@ impl LocalCache {
     }
 }
 
-// ── BuiltManifestRef ─────────────────────────────────────────────────────────
 
 /// A compact on-disk record that associates a logical bundle name with the
 /// digest of its manifest.  Written by `bundle pull` and read by `bundle apply`.
@@ -375,7 +368,6 @@ pub struct PulledBundle {
     pub digest: String,
 }
 
-// ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {

@@ -1,4 +1,3 @@
-//! `bundle version` — print version and git revision information.
 
 use git_version::git_version;
 

@@ -19,12 +19,10 @@ use std::collections::HashMap;
 
 use anyhow::{Context, Result};
 
-// ── Constants ─────────────────────────────────────────────────────────────────
 
 /// The OCI manifest annotation key under which mcpm stores managed-keys info.
 pub const MANAGED_KEYS_ANNOTATION: &str = "bundle.managed-keys";
 
-// ── Type alias ────────────────────────────────────────────────────────────────
 
 /// A map from server-root-relative config file path to the list of
 /// dot-separated key paths that this bundle owns.
@@ -35,7 +33,6 @@ pub const MANAGED_KEYS_ANNOTATION: &str = "bundle.managed-keys";
 /// ```
 pub type ManagedKeys = HashMap<String, Vec<String>>;
 
-// ── Public API ────────────────────────────────────────────────────────────────
 
 /// Encode a `ManagedKeys` map to a compact JSON string suitable for storing as
 /// an OCI manifest annotation value.
@@ -126,7 +123,6 @@ pub fn set_in_annotations(
     Ok(())
 }
 
-// ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
@@ -148,7 +144,6 @@ mod tests {
         m
     }
 
-    // ── encode / decode round-trips ───────────────────────────────────────────
 
     #[test]
     fn round_trip_non_empty() {
@@ -188,7 +183,6 @@ mod tests {
         assert!(decode("[1,2,3]").is_err());
     }
 
-    // ── deterministic encoding ────────────────────────────────────────────────
 
     #[test]
     fn encode_is_deterministic() {
@@ -216,7 +210,6 @@ mod tests {
         assert!(m_pos < z_pos, "m_path should come before z_path");
     }
 
-    // ── merge ─────────────────────────────────────────────────────────────────
 
     #[test]
     fn merge_disjoint_paths_are_unioned() {
@@ -291,7 +284,6 @@ mod tests {
         assert_eq!(merged["plugins/A/config.yml"], vec!["s3"]);
     }
 
-    // ── annotation map helpers ─────────────────────────────────────────────────
 
     #[test]
     fn from_manifest_annotations_none() {
@@ -345,7 +337,6 @@ mod tests {
         assert!(!map.contains_key(MANAGED_KEYS_ANNOTATION));
     }
 
-    // ── from_manage_directives ────────────────────────────────────────────────
 
     #[test]
     fn from_manage_directives_basic() {

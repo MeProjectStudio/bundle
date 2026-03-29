@@ -1,34 +1,3 @@
-//! `bundle apply` — pull all bundles then unpack their layers onto the server.
-//! `bundle apply` — pull new bundle versions then extract them onto the server.
-//!
-//! ## Docker Compose analogy
-//!
-//! | Command        | Compose equivalent          | What it does                      |
-//! |----------------|-----------------------------|-----------------------------------|
-//! | `bundle pull`  | `docker compose pull`       | cache update only, no FS changes  |
-//! | `bundle apply` | pull + install (no start)   | pull + extract layers onto FS     |
-//! | `bundle run`   | `docker compose up`         | pull + apply to FS + start server |
-//!
-//! `bundle apply` sits between `pull` (cache-only) and `run` (full up).  It
-//! is the right command when you want to update the server's plugin/mod files
-//! without starting the server process.
-//!
-//! ## Behaviour
-//!
-//! 1. **Pull** — resolve all bundle tags in `bundle.toml` to sha256 digests,
-//!    download any missing layer blobs into `~/.cache/bundle/`, and write
-//!    `bundle.lock`.  Skip with `--no-pull`.
-//! 2. **Extract** — unpack each bundle's OCI layers onto the server directory,
-//!    last-writer-wins for plain files.
-//! 3. **Merge** — for config files that declare `MANAGE` keys, the bundle's
-//!    values are merged in while the user's on-disk values are preserved for
-//!    all unmanaged keys.
-//!
-//! ## Pre-conditions
-//!
-//! - `bundle.toml` must exist in the current directory.
-//! - Network access is required unless `--no-pull` is given and all blobs are
-//!   already present in the local cache (`~/.cache/bundle/`).
 
 use std::path::PathBuf;
 
@@ -40,7 +9,6 @@ use crate::project::lock::LockFile;
 use crate::registry::client::McpmRegistryClient;
 use crate::registry::types::{ImageManifest, LocalCache};
 
-// ── Arguments ─────────────────────────────────────────────────────────────────
 
 /// Arguments accepted by `bundle apply`.
 #[derive(Debug, Clone, Default)]
@@ -58,7 +26,6 @@ pub struct ApplyArgs {
     pub no_pull: bool,
 }
 
-// ── Entry point ───────────────────────────────────────────────────────────────
 
 /// Run `bundle apply` (or `bundle diff` when `args.dry_run` is `true`).
 pub async fn run(args: ApplyArgs) -> Result<()> {
@@ -71,7 +38,6 @@ pub async fn run(args: ApplyArgs) -> Result<()> {
 
     eprintln!("[{}] server directory: {}", action, server_dir.display());
 
-    // ── Auto-pull ─────────────────────────────────────────────────────────────
     // Always pull before applying so the cache and bundle.lock are fresh.
     // This matches the behaviour of `bundle run` (pull → apply → exec) and
     // means users never have to remember to run pull separately.
@@ -88,7 +54,6 @@ pub async fn run(args: ApplyArgs) -> Result<()> {
         eprintln!("[{}] skipping pull (--no-pull)", action);
     }
 
-    // ── Load project config ───────────────────────────────────────────────────
     let project = ProjectConfig::load_from(&server_dir).with_context(|| {
         format!(
             "reading bundle.toml in {} (run `bundle init` to create one)",
@@ -110,7 +75,6 @@ pub async fn run(args: ApplyArgs) -> Result<()> {
         project.bundles.len()
     );
 
-    // ── Load lock file ────────────────────────────────────────────────────────
     let lock_path = server_dir.join(crate::project::lock::LOCK_FILE_NAME);
     let lock = LockFile::load_from(&lock_path).context("loading bundle.lock")?;
 
@@ -122,10 +86,8 @@ pub async fn run(args: ApplyArgs) -> Result<()> {
         );
     }
 
-    // ── Open local cache ──────────────────────────────────────────────────────
     let cache = LocalCache::open().context("opening local cache")?;
 
-    // ── Resolve each bundle to its manifest ───────────────────────────────────
     // Process bundles in deterministic order (sort by bundle name).
     let mut bundle_names: Vec<&String> = project.bundles.keys().collect();
     bundle_names.sort();
@@ -211,7 +173,6 @@ pub async fn run(args: ApplyArgs) -> Result<()> {
         return Ok(());
     }
 
-    // ── Apply / diff ──────────────────────────────────────────────────────────
     eprintln!(
         "[{}] {} {} bundle(s) onto {}…",
         action,
@@ -224,7 +185,6 @@ pub async fn run(args: ApplyArgs) -> Result<()> {
         .await
         .context("applying bundle layers")?;
 
-    // ── Report ────────────────────────────────────────────────────────────────
     println!();
     if args.dry_run {
         println!("Diff (what `bundle apply` would do, based on current registry state):");
@@ -246,7 +206,6 @@ pub async fn run(args: ApplyArgs) -> Result<()> {
     Ok(())
 }
 
-// ── Registry helpers ──────────────────────────────────────────────────────────
 
 /// Pull a bundle manifest from the registry and store it in the local cache.
 /// Returns the parsed `ImageManifest`.

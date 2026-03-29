@@ -34,7 +34,6 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 
-// ── Public API ────────────────────────────────────────────────────────────────
 
 /// Merge `on_disk` and `from_bundle` bytes, returning the merged bytes.
 ///
@@ -62,7 +61,6 @@ pub fn merge_config(
     }
 }
 
-// ── Format detection ──────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConfigFormat {
@@ -83,7 +81,6 @@ pub fn detect_format(path: &Path) -> Option<ConfigFormat> {
     }
 }
 
-// ── YAML merge ────────────────────────────────────────────────────────────────
 
 fn merge_yaml(on_disk: &[u8], from_bundle: &[u8], managed_keys: &[String]) -> Result<Vec<u8>> {
     let disk_str = std::str::from_utf8(on_disk).context("on-disk YAML is not valid UTF-8")?;
@@ -147,7 +144,6 @@ fn set_yaml_nested(val: &mut serde_yaml::Value, path: &[&str], new_val: serde_ya
     }
 }
 
-// ── TOML merge ────────────────────────────────────────────────────────────────
 
 fn merge_toml(on_disk: &[u8], from_bundle: &[u8], managed_keys: &[String]) -> Result<Vec<u8>> {
     let disk_str = std::str::from_utf8(on_disk).context("on-disk TOML is not valid UTF-8")?;
@@ -201,7 +197,6 @@ fn set_toml_nested(val: &mut toml::Value, path: &[&str], new_val: toml::Value) {
     }
 }
 
-// ── JSON merge ────────────────────────────────────────────────────────────────
 
 fn merge_json(on_disk: &[u8], from_bundle: &[u8], managed_keys: &[String]) -> Result<Vec<u8>> {
     let disk_str = std::str::from_utf8(on_disk).context("on-disk JSON is not valid UTF-8")?;
@@ -256,7 +251,6 @@ fn set_json_nested(val: &mut serde_json::Value, path: &[&str], new_val: serde_js
     }
 }
 
-// ── .properties merge ─────────────────────────────────────────────────────────
 
 /// Java `.properties` merge.
 ///
@@ -328,7 +322,6 @@ fn merge_properties(
     Ok(output.into_bytes())
 }
 
-// ── .properties line-level representation ────────────────────────────────────
 
 #[derive(Debug)]
 enum PropertyLine {
@@ -449,7 +442,6 @@ fn parse_property_kv(line: &str) -> Option<(String, String)> {
     Some((unescape_property(raw_key), unescape_property(&value)))
 }
 
-// ── .properties full parse (for bundle side) ─────────────────────────────────
 
 fn parse_properties(content: &str) -> Result<HashMap<String, String>> {
     let mut map = HashMap::new();
@@ -465,7 +457,6 @@ fn parse_properties(content: &str) -> Result<HashMap<String, String>> {
     Ok(map)
 }
 
-// ── .properties escape / unescape ────────────────────────────────────────────
 
 /// Unescape a `.properties` key or value string.
 ///
@@ -552,13 +543,11 @@ fn escape_property_value(s: &str) -> String {
     result
 }
 
-// ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    // ── detect_format ─────────────────────────────────────────────────────────
 
     #[test]
     fn format_yml() {
@@ -610,7 +599,6 @@ mod tests {
         assert_eq!(detect_format(Path::new("native.so")), None);
     }
 
-    // ── YAML merge ────────────────────────────────────────────────────────────
 
     #[test]
     fn yaml_managed_key_taken_from_bundle() {
@@ -704,7 +692,6 @@ mod tests {
         );
     }
 
-    // ── TOML merge ────────────────────────────────────────────────────────────
 
     #[test]
     fn toml_managed_key_from_bundle() {
@@ -745,7 +732,6 @@ mod tests {
         );
     }
 
-    // ── JSON merge ────────────────────────────────────────────────────────────
 
     #[test]
     fn json_managed_key_from_bundle() {
@@ -767,7 +753,6 @@ mod tests {
         assert!(merged.is_none());
     }
 
-    // ── .properties merge ─────────────────────────────────────────────────────
 
     #[test]
     fn properties_managed_key_from_bundle() {
@@ -846,7 +831,6 @@ mod tests {
         );
     }
 
-    // ── unescape_property ────────────────────────────────────────────────────
 
     #[test]
     fn unescape_newline() {
@@ -868,7 +852,6 @@ mod tests {
         assert_eq!(unescape_property("hello world"), "hello world");
     }
 
-    // ── parse_property_kv ─────────────────────────────────────────────────────
 
     #[test]
     fn parse_kv_equals_sep() {

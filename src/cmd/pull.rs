@@ -1,47 +1,6 @@
-//! `bundle pull` — resolve all bundle tags in `bundle.toml` to sha256 digests,
-//! `bundle pull` — like `docker compose pull`.
-//!
-//! Resolves all bundle tags in `bundle.toml` to sha256 digests (optionally
-//! resolving semver range expressions first) and downloads every layer blob
-//! to the local cache.  Writes `bundle.lock`.
-//!
-//! ## No filesystem changes
-//!
-//! `bundle pull` **only** updates the local blob cache (`~/.cache/bundle/`)
-//! and the `bundle.lock` file.  It never extracts layers onto the server
-//! directory.  Use `bundle apply` to also update the server FS, or
-//! `bundle run` to do everything at once.
-//!
-//! ## Docker Compose analogy
-//!
-//! | Command        | Compose equivalent         | What it does                     |
-//! |----------------|----------------------------|----------------------------------|
-//! | `bundle pull`  | `docker compose pull`      | cache update only, no FS changes |
-//! | `bundle apply` | pull + install (no start)  | pull + extract layers onto FS    |
-//! | `bundle run`   | `docker compose up`        | pull + apply to FS + start server|
-//!
-//! ## What it does
-//!
-//! 1. Read `bundle.toml` → `bundles` map (`name → image:tag`).
-//! 2. For each bundle (semver ranges are resolved to concrete tags first):
-//!    a. Fetch the manifest from the registry.
-//!    b. Record the manifest digest in `bundle.lock`.
-//!    c. Download every layer blob (and config blob) not already in the
-//!    local cache (`~/.cache/bundle/blobs/sha256/`).
-//!    d. Store the manifest JSON in the local cache keyed by image ref.
-//! 3. Write `bundle.lock`.
-//!
-//! ## Caching
-//!
-//! Blobs that are already cached are skipped (content-addressed, so a cache
-//! hit means the data is definitely correct).  Run `bundle pull` again at any
-//! time to refresh or re-verify without touching the server filesystem.
-//!
-//! ## Lock file
-//!
-//! After a successful pull `bundle.lock` is rewritten from scratch so that
-//! removed bundles are pruned automatically.  Entries are sorted for
-//! deterministic diffs.
+macro_rules! log {
+    ($($t:tt)*) => { crate::progress!("pull", $($t)*) };
+}
 
 use anyhow::{Context, Result};
 use tokio::io::AsyncWriteExt;
@@ -52,11 +11,9 @@ use crate::registry::client::McpmRegistryClient;
 use crate::registry::semver as sv;
 use crate::registry::types::{Descriptor, LocalCache};
 
-// ── Entry point ───────────────────────────────────────────────────────────────
 
 /// Run `bundle pull`.
 pub async fn run() -> Result<()> {
-    // ── Load project config ───────────────────────────────────────────────────
     let config =
         ProjectConfig::load().context("reading bundle.toml (run `bundle init` to create one)")?;
 
@@ -70,11 +27,9 @@ pub async fn run() -> Result<()> {
         config.bundles.len()
     );
 
-    // ── Open cache and registry client ────────────────────────────────────────
     let cache = LocalCache::open().context("opening local cache")?;
     let client = McpmRegistryClient::new();
 
-    // ── Process each bundle ───────────────────────────────────────────────────
     let mut new_lock = LockFile::default();
 
     // Sort bundles for deterministic output.
@@ -134,7 +89,6 @@ pub async fn run() -> Result<()> {
         }
     }
 
-    // ── Write bundle.lock ───────────────────────────────────────────────────────
     new_lock.save().context("writing bundle.lock")?;
     println!();
     println!(
@@ -145,7 +99,6 @@ pub async fn run() -> Result<()> {
     Ok(())
 }
 
-// ── Semver resolution ─────────────────────────────────────────────────────────
 
 /// Resolve a semver range tag in `image_ref` to a concrete tag by listing all
 /// tags from the registry and picking the highest matching stable version.
@@ -156,14 +109,14 @@ async fn resolve_semver(client: &McpmRegistryClient, image_ref: &str) -> Result<
     let tag = sv::tag_of(image_ref)
         .ok_or_else(|| anyhow::anyhow!("could not extract tag from {}", image_ref))?;
 
-    eprintln!("[pull]   listing tags to resolve semver range {:?}", tag);
+    log!("  listing tags to resolve semver range {:?}", tag);
 
     let all_tags = client
         .list_tags(image_ref)
         .await
         .with_context(|| format!("listing tags for {}", image_ref))?;
 
-    eprintln!("[pull]   {} tag(s) available", all_tags.len());
+    log!("  {} tag(s) available", all_tags.len());
 
     let resolved_tag = sv::resolve(tag, &all_tags)
         .with_context(|| format!("resolving semver range {:?} for {}", tag, image_ref))?;
@@ -171,7 +124,6 @@ async fn resolve_semver(client: &McpmRegistryClient, image_ref: &str) -> Result<
     Ok(sv::rewrite_tag(image_ref, &resolved_tag))
 }
 
-// ── Per-bundle pull ───────────────────────────────────────────────────────────
 
 /// Pull one bundle: fetch its manifest, cache all layer blobs, and return
 /// the manifest digest.
@@ -181,8 +133,7 @@ async fn pull_bundle(
     _name: &str,
     image_ref: &str,
 ) -> Result<String> {
-    // ── Fetch manifest ────────────────────────────────────────────────────────
-    eprintln!("[pull]   fetching manifest for {}", image_ref);
+    log!("  fetching manifest for {}", image_ref);
 
     let (manifest, digest) = client
         .pull_manifest(image_ref)
@@ -198,10 +149,9 @@ async fn pull_bundle(
         .store_manifest(image_ref, &manifest_json, &digest)
         .with_context(|| format!("caching manifest for {}", image_ref))?;
 
-    eprintln!("[pull]   manifest digest: {}", short(&digest));
-    eprintln!("[pull]   {} layer(s) to check", manifest.layers().len());
+    log!("  manifest digest: {}", short(&digest));
+    log!("  {} layer(s) to check", manifest.layers().len());
 
-    // ── Download layers ───────────────────────────────────────────────────────
     for (idx, layer) in manifest.layers().iter().enumerate() {
         let layer_digest = layer.digest().to_string();
         eprint!(
@@ -246,7 +196,6 @@ async fn pull_bundle(
         eprintln!("done ✓ ({} bytes)", raw.len());
     }
 
-    // ── Download config blob ──────────────────────────────────────────────────
     {
         let cfg_desc = manifest.config();
         let cfg_digest = cfg_desc.digest().to_string();
@@ -276,7 +225,6 @@ async fn pull_bundle(
     Ok(digest)
 }
 
-// ── Download helper ───────────────────────────────────────────────────────────
 
 /// Download a single OCI blob (layer or config) and return the raw bytes.
 async fn download_blob(
@@ -297,7 +245,6 @@ async fn download_blob(
     Ok(writer.into_inner())
 }
 
-// ── AsyncVecWriter ────────────────────────────────────────────────────────────
 
 /// A minimal `tokio::io::AsyncWrite` impl that accumulates bytes into a Vec.
 struct AsyncVecWriter {
@@ -338,7 +285,6 @@ impl tokio::io::AsyncWrite for AsyncVecWriter {
     }
 }
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
 
 fn short(digest: &str) -> String {
     let hex = digest.strip_prefix("sha256:").unwrap_or(digest);

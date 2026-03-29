@@ -44,7 +44,6 @@ use crate::apply::merge::{detect_format, merge_config};
 use crate::bundle::annotations::{from_manifest_annotations, ManagedKeys};
 use crate::registry::types::LocalCache;
 
-// ── Public types ──────────────────────────────────────────────────────────────
 
 /// A single file-level change produced by [`apply_bundles`].
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -105,7 +104,6 @@ impl ChangeKind {
     }
 }
 
-// ── Main entry point ──────────────────────────────────────────────────────────
 
 /// Apply (or diff) one or more bundles onto `server_dir`.
 ///
@@ -165,7 +163,6 @@ pub async fn apply_bundles(
     Ok(all_changes)
 }
 
-// ── Single-layer apply ────────────────────────────────────────────────────────
 
 /// Apply a single gzip-compressed layer to `server_dir`.
 ///
@@ -304,7 +301,6 @@ async fn apply_layer(
     Ok(changes)
 }
 
-// ── File-level apply ──────────────────────────────────────────────────────────
 
 /// Apply a single file to `dest_path`, using config merge if appropriate.
 ///
@@ -387,7 +383,6 @@ fn determine_dry_run_kind(
     ChangeKind::WouldOverwrite
 }
 
-// ── Whiteout helpers ──────────────────────────────────────────────────────────
 
 /// Delete the *contents* of `dir` (not the directory itself) and return the
 /// list of server-root-relative paths that were (or would be) deleted.
@@ -434,7 +429,6 @@ fn delete_directory_contents(dir: &Path, dry_run: bool) -> Result<Vec<String>> {
     Ok(deleted)
 }
 
-// ── Formatting helpers ────────────────────────────────────────────────────────
 
 /// Pretty-print a list of changes to stdout in a human-readable format.
 ///
@@ -479,7 +473,6 @@ pub fn print_changes(changes: &[FileChange]) {
     );
 }
 
-// ── Low-level helpers ─────────────────────────────────────────────────────────
 
 /// Strip a leading `/` from a path.
 fn strip_leading_slash(path: &Path) -> PathBuf {
@@ -507,7 +500,6 @@ fn short_digest(digest: &str) -> String {
     format!("sha256:{}", &hex[..hex.len().min(12)])
 }
 
-// ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
@@ -593,7 +585,6 @@ mod tests {
         (packed.digest, packed.compressed)
     }
 
-    // ── Jars layer remapping ──────────────────────────────────────────────────
 
     /// The dest path in the layer is used verbatim — plugins go to plugins/,
     /// mods go to mods/, whatever the Bundlefile author declared.
@@ -675,7 +666,6 @@ mod tests {
         );
     }
 
-    // ── Config file merge ─────────────────────────────────────────────────────
 
     #[tokio::test]
     async fn config_file_merged_with_managed_keys() {
@@ -739,7 +729,6 @@ mod tests {
         );
     }
 
-    // ── Non-config files always overwritten ───────────────────────────────────
 
     #[tokio::test]
     async fn jar_file_always_overwritten() {
@@ -777,7 +766,6 @@ mod tests {
         assert_eq!(content, b"new-jar-bytes");
     }
 
-    // ── Dry run ───────────────────────────────────────────────────────────────
 
     #[tokio::test]
     async fn dry_run_does_not_write() {
@@ -850,7 +838,6 @@ mod tests {
         assert_eq!(std::fs::read(&config_path).unwrap(), b"key: disk\n");
     }
 
-    // ── Multiple bundles ──────────────────────────────────────────────────────
 
     #[tokio::test]
     async fn multiple_bundles_applied_in_order() {
@@ -891,7 +878,6 @@ mod tests {
         );
     }
 
-    // ── print_changes formatting ──────────────────────────────────────────────
 
     #[test]
     fn print_changes_no_panic_on_empty() {
@@ -921,7 +907,6 @@ mod tests {
         print_changes(&changes);
     }
 
-    // ── ChangeKind helpers ────────────────────────────────────────────────────
 
     #[test]
     fn change_kind_is_dry_run() {

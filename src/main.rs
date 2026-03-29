@@ -1,21 +1,3 @@
-//! `bundle` — Minecraft server bundle manager via OCI containers.
-//!
-//! Two command groups, mirroring `docker` + `docker compose`:
-//!
-//! ```sh
-//! # ── Image authoring (like docker build/push) ─────────────────────────────
-//! bundle init                           # scaffold a Bundlefile
-//! bundle build                          # build OCI image from Bundlefile
-//! bundle push ghcr.io/me/plugin:v1      # publish to a registry
-//!
-//! # ── Server management (like docker compose) ──────────────────────────────
-//! bundle server init                    # scaffold bundle.toml in server dir
-//! bundle server pull                    # resolve tags → digests, cache blobs
-//! bundle server apply                   # pull + extract bundles onto server FS
-//! bundle server diff                    # preview what apply would change
-//! bundle server run                     # apply + start server (compose up)
-//! ```
-
 mod apply;
 mod bundle;
 mod bundlefile;
@@ -36,9 +18,6 @@ use clap::{Parser, Subcommand, ValueHint};
     name = "bundle",
     bin_name = "bundle",
     about = "Minecraft server bundle manager via OCI containers",
-    long_about = "Two command groups, mirroring `docker` + `docker compose`:\n\n\
-                  Image authoring  →  bundle init / build / push\n\
-                  Server management →  bundle server init / pull / apply / diff / run",
     version,
     author
 )]
@@ -47,38 +26,44 @@ struct Cli {
     command: Commands,
 }
 
-// ── Root commands (image authoring) ──────────────────────────────────────────
-
 #[derive(Subcommand, Debug)]
 enum Commands {
-    /// Print version and git revision information.
-    ///
-    /// Shows the release version from Cargo.toml and the git commit hash
-    /// embedded at compile time via `git describe`.
+    /// Print version and git revision.
     Version,
 
-    /// Scaffold a Bundlefile in the current directory.
+    /// Log in to a container registry and save credentials.
     ///
-    /// Creates a commented `Bundlefile` template ready to be filled in with
-    /// ADD, COPY, and MANAGE directives.  Does not create bundle.toml — use
-    /// `bundle server init` for that.
+    /// Credentials are written to `$XDG_RUNTIME_DIR/containers/auth.json`
+    /// (Linux) or `$HOME/.config/containers/auth.json`.
+    /// Override with `--authfile` or `REGISTRY_AUTH_FILE`.
+    Login {
+        /// Registry to log in to. May include a path: `registry.example.com/private`.
+        #[arg(value_name = "REGISTRY")]
+        registry: String,
+
+        #[arg(short = 'u', long)]
+        username: Option<String>,
+
+        #[arg(short = 'p', long)]
+        password: Option<String>,
+
+        /// Read password from stdin.
+        #[arg(long)]
+        password_stdin: bool,
+
+        /// Path to the auth file. Overrides the default and `REGISTRY_AUTH_FILE`.
+        #[arg(long, value_name = "PATH", value_hint = ValueHint::FilePath)]
+        authfile: Option<PathBuf>,
+    },
+
+    /// Scaffold a Bundlefile in the current directory.
     Init,
 
     /// Build an OCI bundle image from a Bundlefile.
     ///
-    /// Like `docker build -t myorg/myplugin:latest .` — fetches or copies all
-    /// declared sources, packs them into gzip-compressed OCI layers, writes the
-    /// image to the local cache (~/.cache/bundle/), and optionally pushes it to
-    /// one or more registry tags.
-    ///
-    /// ## Examples
-    ///
-    /// ```sh
-    /// bundle build .
-    /// bundle build -t ghcr.io/me/myplugin:latest .
-    /// bundle build -t ghcr.io/me/myplugin:latest -t ghcr.io/me/myplugin:nightly .
-    /// bundle build --bundlefile path/to/Bundlefile
-    /// ```
+    /// Fetches or copies all declared sources, packs them into OCI layers,
+    /// and stores the result in `~/.cache/bundle/`.  Use `-t` to push
+    /// immediately after a successful build.
     Build {
         /// Override a Bundlefile ARG: --build-arg KEY=VALUE.
         ///
@@ -92,15 +77,9 @@ enum Commands {
         )]
         build_arg: Vec<(String, String)>,
 
-        /// Tag the built image and push it to the registry.
-        ///
-        /// May be specified multiple times to push to several tags at once:
-        ///   -t ghcr.io/me/myplugin:latest -t ghcr.io/me/myplugin:v1.2.0
-        ///
-        /// Equivalent to running `bundle push <IMAGE:TAG>` for each tag after
-        /// a successful build.  The image is always stored in the local cache
-        /// (~/.cache/bundle/built/) regardless of whether -t is used, so you
-        /// can push to additional tags later with `bundle push`.
+        /// Tag and push after building. May be repeated for multiple tags.
+        /// The image is always cached locally regardless — push more tags
+        /// later with `bundle push`.
         #[arg(
             short = 't',
             long = "tag",
@@ -109,14 +88,11 @@ enum Commands {
         )]
         tag: Vec<String>,
 
-        /// Build context directory.  The Bundlefile is looked up inside this
-        /// directory.  Defaults to the current directory, mirroring
-        /// `docker build .`
+        /// Build context directory. Defaults to the current directory.
         #[arg(value_name = "PATH", value_hint = ValueHint::DirPath)]
         path: Option<PathBuf>,
 
-        /// Explicit path to the Bundlefile, overriding auto-detection from
-        /// the build context directory.
+        /// Explicit path to the Bundlefile. Overrides the context directory.
         #[arg(
             long,
             value_name = "FILE",
@@ -125,115 +101,59 @@ enum Commands {
         bundlefile: Option<PathBuf>,
     },
 
-    /// Push the most recently built image to an OCI registry.
-    ///
-    /// The image must have been built first with `bundle build`.
-    ///
-    /// ## Authentication
-    ///
-    /// Credentials are resolved from environment variables or
-    /// ~/.docker/config.json.  Set GHCR_IO_USERNAME + GHCR_IO_PASSWORD for
-    /// ghcr.io, or REGISTRY_USERNAME + REGISTRY_PASSWORD generically.
+    /// Push the most recently built image to a registry.
+    /// Requires a fully-qualified reference including the registry hostname.
     Push {
-        /// The fully-qualified OCI image reference to push to.
-        ///
-        /// Examples:
-        ///   ghcr.io/someauthor/essentials:v2.20.1
-        ///   docker.io/myorg/my-server-bundle:latest
+        /// Image reference to push to, e.g. `ghcr.io/myorg/myplugin:latest`.
         #[arg(value_name = "IMAGE:TAG", value_hint = ValueHint::Other)]
         image_tag: String,
     },
 
-    // ── Server subcommand group ───────────────────────────────────────────────
-    /// Manage OCI bundles on a Minecraft server.
-    ///
-    /// Like `docker compose` but for Minecraft — pulls bundle images defined
-    /// in bundle.toml, extracts them onto the server filesystem, and manages
-    /// the server process.
-    ///
-    /// Run `bundle server --help` for a list of subcommands.
+    /// Manage OCI bundles on a Minecraft server (pull, apply, run).
     #[command(subcommand)]
     Server(ServerCommands),
 }
 
-// ── Server subcommands (server management) ────────────────────────────────────
-
 #[derive(Subcommand, Debug)]
 enum ServerCommands {
     /// Scaffold a bundle.toml in the current directory.
-    ///
-    /// Creates a commented `bundle.toml` template with a [server] section and
-    /// an empty [bundles] section ready to be filled in with OCI image
-    /// references.  Does not create a Bundlefile — use `bundle init` for that.
     Init,
 
-    /// Like `docker compose pull` — resolve tags and download layer blobs.
-    ///
-    /// Resolves all bundle tags in bundle.toml to sha256 digests (semver
-    /// ranges are resolved to the highest matching tag), downloads all layer
-    /// blobs into the local cache (~/.cache/bundle/), and writes bundle.lock.
-    ///
-    /// **No filesystem changes** — only the local blob cache and bundle.lock
-    /// are updated.  Use `bundle server apply` to also extract layers onto the
-    /// server, or `bundle server run` to do everything at once.
+    /// Resolve all bundle tags, download layer blobs, write bundle.lock.
+    /// No filesystem changes — use `bundle server apply` to extract layers.
     Pull,
 
-    /// Pull new bundle versions then extract them onto the server filesystem.
-    ///
-    /// Like `docker compose pull` + installing — resolves tags, downloads
-    /// layer blobs, extracts them onto the server directory, and merges config
-    /// files using the MANAGE annotations.
-    ///
-    /// Pull is always run first so bundle.lock stays up to date.  Use
-    /// `--no-pull` to skip network access and apply from the local cache only.
-    /// Use `bundle server run` to also start the server afterwards.
+    /// Pull bundles then extract them onto the server directory.
+    /// Merges config files according to MANAGE annotations.
     Apply {
-        /// Use this directory as the server root instead of $PWD.
+        /// Server root directory. Defaults to the current directory.
         #[arg(long, value_name = "PATH", value_hint = ValueHint::DirPath)]
         server_dir: Option<PathBuf>,
 
-        /// Skip the automatic pull step and apply from the local cache only.
-        /// Useful for offline workflows or when a separate `bundle server pull`
-        /// has already been run.
+        /// Skip pull and apply from the local cache only.
         #[arg(long)]
         no_pull: bool,
     },
 
-    /// Preview what `bundle server apply` would change, without writing anything.
-    ///
-    /// Pulls current bundle state from the registry first (same as apply),
-    /// then reports files that would be created, overwritten, merged, or
-    /// deleted — without touching the server directory.
-    ///
-    /// Exit code is always 0 regardless of whether changes are detected.
-    /// Pass `--no-pull` to diff against the local cache only.
+    /// Show what `bundle server apply` would change without writing anything.
     Diff {
-        /// Skip the automatic pull step and diff against the local cache only.
+        /// Skip pull and diff against the local cache only.
         #[arg(long)]
         no_pull: bool,
     },
 
-    /// Like `docker compose up` — apply bundles then start the server.
-    ///
-    /// Runs `bundle server apply` (pull + extract onto FS) then replaces the
-    /// current process with the `server.run` command declared in bundle.toml.
-    ///
-    /// On Unix the server process replaces the bundle process via execvp(2),
-    /// inheriting the same PID and signal handlers — ideal for container
-    /// entrypoints.  On non-Unix systems a child process is spawned instead.
+    /// Pull, apply, then start the server process declared in bundle.toml.
+    /// On Unix the server replaces the current process via execvp(2).
     Run {
-        /// Skip the pull step (apply from local cache, then start server).
-        /// Same as `bundle server apply --no-pull` + exec.
+        /// Skip pull, apply from local cache, then start the server.
         #[arg(long)]
         no_pull: bool,
 
-        /// Skip apply entirely and exec the server immediately.
-        /// Useful when bundles are already up-to-date and you just want to
-        /// (re)start the server process.
+        /// Skip apply and start the server immediately.
         #[arg(long)]
         no_apply: bool,
 
-        /// Use this directory as the server root instead of $PWD.
+        /// Server root directory. Defaults to the current directory.
         #[arg(long, value_name = "PATH", value_hint = ValueHint::DirPath)]
         server_dir: Option<PathBuf>,
     },
@@ -254,17 +174,32 @@ async fn run() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        // ── version ───────────────────────────────────────────────────────────
         Commands::Version => {
             cmd::version::run();
         }
 
-        // ── init ──────────────────────────────────────────────────────────────
+        Commands::Login {
+            registry,
+            username,
+            password,
+            password_stdin,
+            authfile,
+        } => {
+            cmd::login::run(cmd::login::LoginArgs {
+                registry,
+                username,
+                password,
+                password_stdin,
+                authfile,
+            })
+            .await
+            .context("bundle login failed")?;
+        }
+
         Commands::Init => {
             cmd::init::run_bundlefile().context("bundle init failed")?;
         }
 
-        // ── build ─────────────────────────────────────────────────────────────
         Commands::Build {
             build_arg,
             tag,
@@ -281,7 +216,6 @@ async fn run() -> Result<()> {
             .context("bundle build failed")?;
         }
 
-        // ── push ──────────────────────────────────────────────────────────────
         Commands::Push { image_tag } => {
             cmd::push::run(cmd::push::PushArgs {
                 image_ref: image_tag,
@@ -290,21 +224,17 @@ async fn run() -> Result<()> {
             .context("bundle push failed")?;
         }
 
-        // ── server subcommands ────────────────────────────────────────────────
         Commands::Server(server_cmd) => match server_cmd {
-            // bundle server init
             ServerCommands::Init => {
                 cmd::init::run_server_config().context("bundle server init failed")?;
             }
 
-            // bundle server pull
             ServerCommands::Pull => {
                 cmd::pull::run()
                     .await
                     .context("bundle server pull failed")?;
             }
 
-            // bundle server apply
             ServerCommands::Apply {
                 server_dir,
                 no_pull,
@@ -318,14 +248,12 @@ async fn run() -> Result<()> {
                 .context("bundle server apply failed")?;
             }
 
-            // bundle server diff
             ServerCommands::Diff { no_pull } => {
                 cmd::diff::run(no_pull)
                     .await
                     .context("bundle server diff failed")?;
             }
 
-            // bundle server run
             ServerCommands::Run {
                 no_pull,
                 no_apply,
@@ -345,24 +273,7 @@ async fn run() -> Result<()> {
     Ok(())
 }
 
-// ── Value parsers ─────────────────────────────────────────────────────────────
-
-/// Parse a `KEY=VALUE` string into `(key, value)`.
-///
-/// The split is on the first `=` only, so values that contain `=` are handled
-/// correctly.
-/// Parse a `--build-arg` value from the command line.
-///
-/// Accepted forms (mirroring Docker):
-///
-/// - `KEY=VALUE` — use `VALUE` verbatim.
-/// - `KEY=`      — explicit empty string (overrides any Bundlefile default).
-/// - `KEY`       — no value: look up `$KEY` from the host environment.
-///   If the variable is set, use its value.
-///   If it is not set, the key is still added to the overrides
-///   map with an empty string, which shadows the Bundlefile
-///   `ARG KEY=default`.  This matches `docker build --build-arg KEY`
-///   behaviour when the env var is absent.
+/// Parse a `--build-arg` value. Accepts `KEY=VALUE` or bare `KEY` (looks up `$KEY` from env).
 fn parse_key_val(s: &str) -> Result<(String, String), String> {
     if let Some((key, value)) = s.split_once('=') {
         if key.is_empty() {

@@ -18,7 +18,6 @@ use tokio::io::AsyncWrite;
 
 use crate::registry::types::{Descriptor, LocalCache, LocalImage};
 
-// ── McpmRegistryClient ────────────────────────────────────────────────────────
 
 /// Wraps an `oci_client::Client` with mcpm-specific auth resolution and
 /// convenience methods for the operations mcpm needs.
@@ -52,47 +51,43 @@ impl McpmRegistryClient {
         }
     }
 
-    // ── auth ──────────────────────────────────────────────────────────────────
 
-    /// Resolve registry credentials for `image_ref`.
+    /// Resolve credentials for `image_ref`.
     ///
-    /// Resolution order (highest priority first):
-    ///
-    /// 1. Environment variables:
-    ///    - `REGISTRY_USERNAME` + `REGISTRY_PASSWORD`
-    ///    - `MCPM_USERNAME` + `MCPM_PASSWORD`
-    /// 2. Per-registry env vars derived from the registry hostname, e.g. for
-    ///    `ghcr.io`: `GHCR_IO_USERNAME` + `GHCR_IO_PASSWORD`.
-    /// 3. `~/.docker/config.json` basic-auth entries.
-    /// 4. `RegistryAuth::Anonymous`.
+    /// Order: env vars → containers auth.json → docker config.json → anonymous.
+    /// The full image reference (not just hostname) is used for prefix matching
+    /// so that keys like `registry.example.com/private` take precedence over
+    /// `registry.example.com`.
     pub fn auth_for(image_ref: &str) -> RegistryAuth {
-        // Parse the registry hostname from the image reference.
         let registry = registry_host_of(image_ref);
-
-        // 1. Generic env-var credentials.
-        if let Some(auth) = env_auth("REGISTRY") {
-            return auth;
-        }
-        if let Some(auth) = env_auth("MCPM") {
-            return auth;
-        }
-
-        // 2. Per-registry env-var credentials  (e.g. GHCR_IO_USERNAME).
         let prefix = registry.to_uppercase().replace(['.', '-'], "_");
-        if let Some(auth) = env_auth(&prefix) {
-            return auth;
+
+        if let Some(a) = env_auth("REGISTRY") {
+            return a;
+        }
+        if let Some(a) = env_auth("MCPM") {
+            return a;
+        }
+        if let Some(a) = env_auth(&prefix) {
+            return a;
         }
 
-        // 3. Docker config.json.
-        if let Some(auth) = docker_config_auth(&registry) {
-            return auth;
+        // containers/auth.json — checked before docker config.json.
+        if let Some(path) = containers_auth_path() {
+            if let Some(a) = auth_from_file(&path, image_ref) {
+                return a;
+            }
         }
 
-        // 4. Fall back to anonymous.
+        if let Some(path) = docker_config_path() {
+            if let Some(a) = auth_from_file(&path, image_ref) {
+                return a;
+            }
+        }
+
         RegistryAuth::Anonymous
     }
 
-    // ── public operations ─────────────────────────────────────────────────────
 
     /// Fetch the manifest for `image_ref` and return `(manifest, digest)`.
     ///
@@ -322,7 +317,6 @@ impl Default for McpmRegistryClient {
     }
 }
 
-// ── Internal blob-download helper ─────────────────────────────────────────────
 
 /// Download a single blob (described by an `oci-spec` [`Descriptor`]) into an
 /// in-memory `Vec<u8>`.  Used by `fetch_layers_to_cache` and
@@ -342,7 +336,6 @@ async fn pull_blob_to_vec(
     Ok(writer.into_inner())
 }
 
-// ── AsyncVecWriter ────────────────────────────────────────────────────────────
 
 /// A minimal `AsyncWrite` that accumulates bytes into a `Vec<u8>`.
 struct AsyncVecWriter {
@@ -384,7 +377,71 @@ impl tokio::io::AsyncWrite for AsyncVecWriter {
     }
 }
 
-// ── Reference parsing ─────────────────────────────────────────────────────────
+
+
+/// Return `true` if `image_ref` contains an explicit registry hostname.
+///
+/// OCI clients silently normalise bare references such as `myplugin:latest`
+/// to `docker.io/library/myplugin:latest`.  Use this helper before any push
+/// operation to ensure the user has been explicit about the destination.
+///
+/// Detection rule: the component before the first `/` is treated as a
+/// registry hostname when it contains a `.` (e.g. `ghcr.io`), a `:` (e.g.
+/// `localhost:5000`), or is exactly `localhost`.
+///
+/// | Reference                                       | Has registry? |
+/// |-------------------------------------------------|---------------|
+/// | `myplugin:latest`                               | No            |
+/// | `me/myplugin:latest`                            | No            |
+/// | `ghcr.io/me/myplugin:latest`                   | Yes           |
+/// | `registry.example.com/plugins/myplugin:v1`    | Yes           |
+/// | `localhost:5000/myplugin:latest`               | Yes           |
+/// | `docker.io/me/myplugin:latest`                 | Yes (explicit)|
+pub fn has_explicit_registry(image_ref: &str) -> bool {
+    match image_ref.find('/') {
+        None => false, // no slash → bare image name, no registry component
+        Some(pos) => {
+            let before_slash = &image_ref[..pos];
+            // A registry hostname contains a dot (ghcr.io, registry.example.com),
+            // a colon (localhost:5000), or is literally "localhost".
+            before_slash.contains('.') || before_slash.contains(':') || before_slash == "localhost"
+        }
+    }
+}
+
+/// Validate that `image_ref` contains an explicit registry hostname.
+///
+/// Returns a descriptive error when no registry is present so that bare
+/// references (e.g. `myplugin:latest`) are caught *before* they silently
+/// reach Docker Hub.
+pub fn require_explicit_registry(image_ref: &str) -> Result<()> {
+    if has_explicit_registry(image_ref) {
+        return Ok(());
+    }
+
+    // Extract just the image/repo portion for the suggestion.
+    let image_part = image_ref
+        .split(':')
+        .next()
+        .unwrap_or(image_ref)
+        .split('/')
+        .next_back()
+        .unwrap_or(image_ref);
+
+    bail!(
+        "image reference '{}' has no explicit registry.\n\
+         \n\
+         `bundle push` and `bundle build -t` require a fully-qualified\n\
+         reference that includes the registry hostname, for example:\n\
+         \n    bundle push registry.example.com/plugins/{}:latest\n\
+         \n    bundle push ghcr.io/myorg/{}:latest\n\
+         \n\
+         No default registry is assumed — be explicit about where to push.",
+        image_ref,
+        image_part,
+        image_part,
+    )
+}
 
 /// Parse a string into an `oci_client::Reference`, providing a
 /// descriptive error on failure.
@@ -415,7 +472,6 @@ pub fn registry_host_of(image_ref: &str) -> String {
     "index.docker.io".to_string()
 }
 
-// ── Credential resolution helpers ─────────────────────────────────────────────
 
 /// Try to build `RegistryAuth::Basic` from `{PREFIX}_USERNAME` and
 /// `{PREFIX}_PASSWORD` environment variables.
@@ -428,68 +484,84 @@ fn env_auth(prefix: &str) -> Option<RegistryAuth> {
     Some(RegistryAuth::Basic(username, password))
 }
 
-// ── Docker config.json ────────────────────────────────────────────────────────
 
-/// The `~/.docker/config.json` structure (only the fields we care about).
-#[derive(Debug, Deserialize)]
-struct DockerConfig {
+/// Shared structure for both `containers/auth.json` and `~/.docker/config.json`.
+#[derive(Debug, serde::Serialize, Deserialize, Default)]
+pub struct AuthFile {
     #[serde(default)]
-    auths: HashMap<String, DockerAuthEntry>,
+    pub auths: HashMap<String, AuthEntry>,
 }
 
-#[derive(Debug, Deserialize)]
-struct DockerAuthEntry {
-    /// Base64-encoded `"username:password"`.
-    #[serde(default)]
-    auth: String,
-    /// Plain-text username (some tools write this instead of `auth`).
-    #[serde(default)]
-    username: String,
-    /// Plain-text password.
-    #[serde(default)]
-    password: String,
+#[derive(Debug, serde::Serialize, Deserialize, Default)]
+pub struct AuthEntry {
+    /// base64("username:password")
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub auth: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub username: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub password: String,
 }
 
-/// Look up credentials for `registry` in the user's docker `config.json`.
+/// Look up credentials for `image_ref` in an auth file.
 ///
-/// Returns `None` if the file is absent, unreadable, or contains no entry for
-/// the given registry.
-fn docker_config_auth(registry: &str) -> Option<RegistryAuth> {
-    let config_path = docker_config_path()?;
-    let content = std::fs::read_to_string(&config_path).ok()?;
-    let config: DockerConfig = serde_json::from_str(&content).ok()?;
+/// Tries keys from most-specific to least-specific so that
+/// `registry.example.com/private` takes precedence over `registry.example.com`.
+/// Also tries the conventional `https://` prefixed forms used by Docker.
+pub fn auth_from_file(path: &std::path::Path, image_ref: &str) -> Option<RegistryAuth> {
+    let content = std::fs::read_to_string(path).ok()?;
+    let file: AuthFile = serde_json::from_str(&content).ok()?;
 
-    // Normalise: try both the bare hostname and the https:// prefixed form.
-    let candidates = [
-        registry.to_string(),
-        format!("https://{}", registry),
-        format!("https://{}/v1/", registry),
-        format!("https://{}/v2/", registry),
-    ];
+    // Build candidates from most-specific to least-specific.
+    // Strip tag/digest so `registry/repo:tag` → `registry/repo`.
+    let bare = image_ref
+        .split('@')
+        .next()
+        .unwrap_or(image_ref)
+        .split(':')
+        .next()
+        .unwrap_or(image_ref);
+
+    let mut candidates: Vec<String> = Vec::new();
+    // Add progressively shorter prefixes: "a/b/c", "a/b", "a"
+    let mut s = bare.to_string();
+    loop {
+        candidates.push(s.clone());
+        candidates.push(format!("https://{}", s));
+        candidates.push(format!("https://{}/v1/", s));
+        candidates.push(format!("https://{}/v2/", s));
+        match s.rfind('/') {
+            Some(pos) => s = s[..pos].to_string(),
+            None => break,
+        }
+    }
 
     for key in &candidates {
-        if let Some(entry) = config.auths.get(key.as_str()) {
-            // Prefer the explicit username/password fields.
+        if let Some(entry) = file.auths.get(key.as_str()) {
             if !entry.username.is_empty() {
                 return Some(RegistryAuth::Basic(
                     entry.username.clone(),
                     entry.password.clone(),
                 ));
             }
-            // Fall back to base64-decoded `auth` field.
             if !entry.auth.is_empty() {
-                if let Some(auth) = decode_docker_auth(&entry.auth) {
-                    return Some(auth);
+                if let Some(a) = decode_auth_token(&entry.auth) {
+                    return Some(a);
                 }
             }
         }
     }
-
     None
 }
 
-/// Decode a base64-encoded `"username:password"` docker auth token.
-fn decode_docker_auth(b64: &str) -> Option<RegistryAuth> {
+/// Encode `username:password` as a base64 auth token.
+pub fn encode_auth_token(username: &str, password: &str) -> String {
+    use base64::Engine;
+    base64::engine::general_purpose::STANDARD.encode(format!("{}:{}", username, password))
+}
+
+/// Decode a base64 `"username:password"` auth token.
+pub fn decode_auth_token(b64: &str) -> Option<RegistryAuth> {
     use base64::Engine;
     let decoded = base64::engine::general_purpose::STANDARD
         .decode(b64.trim())
@@ -499,17 +571,27 @@ fn decode_docker_auth(b64: &str) -> Option<RegistryAuth> {
     Some(RegistryAuth::Basic(user.to_string(), pass.to_string()))
 }
 
-/// Return the path to `~/.docker/config.json`, or `None` if the home
-/// directory cannot be determined.
+/// Path to `${XDG_RUNTIME_DIR}/containers/auth.json` (Linux) or
+/// `$HOME/.config/containers/auth.json` (other platforms).
+/// Overridden by `REGISTRY_AUTH_FILE` environment variable.
+pub fn containers_auth_path() -> Option<PathBuf> {
+    if let Ok(p) = std::env::var("REGISTRY_AUTH_FILE") {
+        return Some(PathBuf::from(p));
+    }
+    #[cfg(unix)]
+    if let Some(runtime) = std::env::var_os("XDG_RUNTIME_DIR") {
+        return Some(PathBuf::from(runtime).join("containers/auth.json"));
+    }
+    dirs::config_dir().map(|d| d.join("containers/auth.json"))
+}
+
 fn docker_config_path() -> Option<PathBuf> {
-    // Honour DOCKER_CONFIG env override (used by CI systems).
     if let Ok(dir) = std::env::var("DOCKER_CONFIG") {
         return Some(PathBuf::from(dir).join("config.json"));
     }
-    dirs::home_dir().map(|h| h.join(".docker").join("config.json"))
+    dirs::home_dir().map(|h| h.join(".docker/config.json"))
 }
 
-// ── short_digest helper ───────────────────────────────────────────────────────
 
 /// Return a human-readable short form of a digest (`"sha256:abcdef12"`).
 fn short_digest(digest: &str) -> String {
@@ -518,11 +600,105 @@ fn short_digest(digest: &str) -> String {
     format!("sha256:{}", short)
 }
 
-// ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+
+    #[test]
+    fn bare_name_has_no_registry() {
+        assert!(!has_explicit_registry("myplugin:latest"));
+        assert!(!has_explicit_registry("myplugin"));
+    }
+
+    #[test]
+    fn dockerhub_org_slash_has_no_registry() {
+        // "me/plugin" looks like a Docker Hub org/repo shorthand — no hostname.
+        assert!(!has_explicit_registry("me/plugin:latest"));
+    }
+
+    #[test]
+    fn ghcr_has_explicit_registry() {
+        assert!(has_explicit_registry("ghcr.io/me/plugin:latest"));
+        assert!(has_explicit_registry("ghcr.io/me/plugin"));
+    }
+
+    #[test]
+    fn custom_registry_has_explicit_registry() {
+        assert!(has_explicit_registry(
+            "registry.mprjct.ru/plugins/worldedit:v7.4.1"
+        ));
+    }
+
+    #[test]
+    fn localhost_has_explicit_registry() {
+        assert!(has_explicit_registry("localhost/myimage:latest"));
+        assert!(has_explicit_registry("localhost:5000/myimage:latest"));
+    }
+
+    #[test]
+    fn explicit_docker_io_has_explicit_registry() {
+        // User typed docker.io explicitly — that is allowed.
+        assert!(has_explicit_registry("docker.io/me/plugin:latest"));
+    }
+
+    #[test]
+    fn require_explicit_registry_ok_for_qualified_ref() {
+        assert!(require_explicit_registry("ghcr.io/me/plugin:latest").is_ok());
+        assert!(require_explicit_registry("registry.example.com/ns/img:v1").is_ok());
+        assert!(require_explicit_registry("localhost:5000/img:latest").is_ok());
+    }
+
+    #[test]
+    fn require_explicit_registry_err_for_bare_ref() {
+        let err = require_explicit_registry("myplugin:latest").unwrap_err();
+        let msg = format!("{:#}", err);
+        assert!(msg.contains("no explicit registry"), "got: {}", msg);
+        assert!(msg.contains("registry hostname"), "got: {}", msg);
+    }
+
+    #[test]
+    fn require_explicit_registry_err_suggests_image_name() {
+        let err = require_explicit_registry("myplugin:latest").unwrap_err();
+        let msg = format!("{:#}", err);
+        // The suggestion should mention the bare image name.
+        assert!(msg.contains("myplugin"), "got: {}", msg);
+    }
+
+
+    #[test]
+    fn auth_from_file_most_specific_wins() {
+        use std::io::Write;
+        use tempfile::NamedTempFile;
+
+        let mut f = NamedTempFile::new().unwrap();
+        write!(f, r#"{{"auths":{{"registry.example.com/private":{{"auth":"{}"}},"registry.example.com":{{"auth":"{}"}}}}}}"#,
+            encode_auth_token("private-user", "private-pass"),
+            encode_auth_token("generic-user", "generic-pass"),
+        ).unwrap();
+
+        // Most specific key wins.
+        let auth = auth_from_file(f.path(), "registry.example.com/private/image:tag");
+        assert!(matches!(auth, Some(RegistryAuth::Basic(u, _)) if u == "private-user"));
+
+        // Falls back to less specific.
+        let auth = auth_from_file(f.path(), "registry.example.com/public/image:tag");
+        assert!(matches!(auth, Some(RegistryAuth::Basic(u, _)) if u == "generic-user"));
+    }
+
+    #[test]
+    fn encode_decode_round_trip() {
+        let token = encode_auth_token("alice", "s3cr3t");
+        match decode_auth_token(&token) {
+            Some(RegistryAuth::Basic(u, p)) => {
+                assert_eq!(u, "alice");
+                assert_eq!(p, "s3cr3t");
+            }
+            _ => panic!("expected Basic auth"),
+        }
+    }
+
 
     #[test]
     fn registry_host_ghcr() {
@@ -548,11 +724,11 @@ mod tests {
     }
 
     #[test]
-    fn decode_docker_auth_valid() {
+    fn decode_auth_token_valid() {
         // "user:pass" base64-encoded
         use base64::Engine;
         let b64 = base64::engine::general_purpose::STANDARD.encode("myuser:mypassword");
-        match decode_docker_auth(&b64) {
+        match decode_auth_token(&b64) {
             Some(RegistryAuth::Basic(u, p)) => {
                 assert_eq!(u, "myuser");
                 assert_eq!(p, "mypassword");
@@ -562,11 +738,11 @@ mod tests {
     }
 
     #[test]
-    fn decode_docker_auth_colon_in_password() {
+    fn decode_auth_token_colon_in_password() {
         use base64::Engine;
         // Password contains a colon — only the first colon is the separator.
         let b64 = base64::engine::general_purpose::STANDARD.encode("user:pa:ss:word");
-        match decode_docker_auth(&b64) {
+        match decode_auth_token(&b64) {
             Some(RegistryAuth::Basic(u, p)) => {
                 assert_eq!(u, "user");
                 assert_eq!(p, "pa:ss:word");
@@ -576,15 +752,15 @@ mod tests {
     }
 
     #[test]
-    fn decode_docker_auth_invalid_b64() {
-        assert!(decode_docker_auth("!!!not-base64!!!").is_none());
+    fn decode_auth_token_invalid_b64() {
+        assert!(decode_auth_token("!!!not-base64!!!").is_none());
     }
 
     #[test]
-    fn decode_docker_auth_no_colon() {
+    fn decode_auth_token_no_colon() {
         use base64::Engine;
         let b64 = base64::engine::general_purpose::STANDARD.encode("nocolon");
-        assert!(decode_docker_auth(&b64).is_none());
+        assert!(decode_auth_token(&b64).is_none());
     }
 
     #[test]
