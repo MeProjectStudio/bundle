@@ -8,7 +8,6 @@ use std::path::PathBuf;
 use crate::cmd::apply::{self, ApplyArgs};
 use crate::project::config::ProjectConfig;
 
-
 /// Arguments accepted by `bundle run`.
 #[derive(Debug, Clone, Default)]
 pub struct RunArgs {
@@ -24,7 +23,6 @@ pub struct RunArgs {
     /// If set, treat this directory as the server root instead of `$PWD`.
     pub server_dir: Option<PathBuf>,
 }
-
 
 /// Run `bundle run` — like `docker compose up`.
 ///
@@ -77,18 +75,57 @@ pub async fn run(args: RunArgs) -> Result<()> {
 
     let program = &project.server.run[0];
     let argv: &[String] = &project.server.run[1..];
+    const ART: &[&str] = &[
+        "                    ",
+        "      ##*#%%%%%%    ",
+        "      ##*+#%%%##%%  ",
+        "      *+=#####%%    ",
+        "     ###*=-=+**     ",
+        "  ##*++++*=*##%%    ",
+        "  ##*++++***###%%%  ",
+        "  ##*++++++***#%%%  ",
+        "  %%##*******###%%  ",
+        "    %%#########%    ",
+        "                    ",
+    ];
+
+    // Build info lines dynamically, filling in bundles up to the art height.
+    let mut info: Vec<String> = vec![
+        String::new(),
+        "  Starting Minecraft server".into(),
+        format!("  command : {}", project.server.run.join(" ")),
+        format!("  cwd     : {}", server_dir.display()),
+        String::new(),
+    ];
+
+    if !project.bundles.is_empty() {
+        info.push("  bundles :".into());
+        let capacity = ART.len().saturating_sub(info.len());
+        let total = project.bundles.len();
+        if total <= capacity {
+            for b in &project.bundles {
+                info.push(format!("    {}", b));
+            }
+        } else {
+            let show = capacity.saturating_sub(1);
+            for b in project.bundles.iter().take(show) {
+                info.push(format!("    {}", b));
+            }
+            info.push(format!("  and {} more…", total - show));
+        }
+    }
 
     println!();
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("  Starting Minecraft server");
-    println!("  command: {}", project.server.run.join(" "));
-    println!("  cwd    : {}", server_dir.display());
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    for (i, art_line) in ART.iter().enumerate() {
+        match info.get(i) {
+            Some(line) if !line.is_empty() => println!("{}  {}", art_line, line),
+            _ => println!("{}", art_line),
+        }
+    }
     println!();
 
     exec_server(program, argv, &server_dir)
 }
-
 
 /// Replace the current process with the server command on Unix, or spawn-and-
 /// wait on other platforms.
@@ -154,7 +191,6 @@ fn exec_server(program: &str, argv: &[String], server_dir: &std::path::Path) -> 
 
     Ok(())
 }
-
 
 #[cfg(test)]
 mod tests {

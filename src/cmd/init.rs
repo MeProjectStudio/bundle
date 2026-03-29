@@ -44,21 +44,17 @@ FROM scratch
 "#;
 
 const BUNDLE_TOML_TEMPLATE: &str = r#"# bundle.toml — server bundle manifest.
-#
-# Commit this file alongside bundle.lock for reproducible server setups.
-
-[server]
-# Command executed by `bundle server run` to start the Minecraft server.
-run = ["java", "-Xmx4G", "-jar", "server.jar", "nogui"]
 
 # OCI bundle images to apply to the server.
-# Tags are resolved to sha256 digests by `bundle server pull`.
-# Semver ranges are supported: "2.4" resolves to the latest 2.4.x release.
+# Semver ranges are supported: "^2.4" resolves to the latest compatible version.
 bundles = [
   # "ghcr.io/someauthor/essentials:v2.20.1",
   # "ghcr.io/luckperms/luckperms:^5",
   # "ghcr.io/jellysquid/sodium:~0.5",
 ]
+
+[server]
+run = ["java", "-Xmx4G", "-jar", "server.jar", "nogui"]
 "#;
 
 /// Run `bundle init` in the current working directory.

@@ -89,3 +89,65 @@ pub fn default_config() -> ProjectConfig {
         bundles: Vec::new(),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    #[test]
+    fn bundles_before_server_section_parses() {
+        let dir = TempDir::new().unwrap();
+        let content = r#"
+bundles = [
+  "ghcr.io/me/plugin:latest",
+  "registry.example.com/ns/mod:v1",
+]
+
+[server]
+run = ["java", "-jar", "server.jar"]
+"#;
+        std::fs::write(dir.path().join("bundle.toml"), content).unwrap();
+        let cfg = ProjectConfig::load_from(dir.path()).unwrap();
+        assert_eq!(cfg.bundles.len(), 2, "bundles before [server] must parse");
+        assert!(cfg
+            .bundles
+            .contains(&"ghcr.io/me/plugin:latest".to_string()));
+    }
+
+    #[test]
+    fn bundles_after_server_section_is_invisible() {
+        // TOML scoping: keys after [server] belong to the server table,
+        // not the root — so bundles ends up empty (the serde default).
+        let dir = TempDir::new().unwrap();
+        let content = r#"
+[server]
+run = ["java", "-jar", "server.jar"]
+
+bundles = [
+  "ghcr.io/me/plugin:latest",
+]
+"#;
+        std::fs::write(dir.path().join("bundle.toml"), content).unwrap();
+        let cfg = ProjectConfig::load_from(dir.path()).unwrap();
+        assert_eq!(
+            cfg.bundles.len(),
+            0,
+            "bundles after [server] is scoped to server, not root"
+        );
+    }
+
+    #[test]
+    fn empty_bundles_array_is_valid() {
+        let dir = TempDir::new().unwrap();
+        let content = r#"
+bundles = []
+
+[server]
+run = ["java", "-jar", "server.jar"]
+"#;
+        std::fs::write(dir.path().join("bundle.toml"), content).unwrap();
+        let cfg = ProjectConfig::load_from(dir.path()).unwrap();
+        assert!(cfg.bundles.is_empty());
+    }
+}
