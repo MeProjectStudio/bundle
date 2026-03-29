@@ -34,7 +34,6 @@ use oci_client::{Client, Reference};
 /// `FROM scratch` means "start with zero inherited layers" — it is a
 /// build-time concept only and never triggers a registry lookup.
 /// It maps directly to an OCI image whose `rootfs.diff_ids` contains
-
 use crate::bundle::annotations::{self, ManagedKeys};
 use crate::bundle::layer::{self, collect_directory_entries, LayerEntry, PackedLayer};
 use crate::bundlefile::parser;
@@ -800,7 +799,7 @@ mod tests {
         let image = build(&bundlefile_path, &HashMap::new()).await.unwrap();
 
         let layer_data = image
-            .get_blob(&image.manifest.layers()[0].digest().to_string())
+            .get_blob(image.manifest.layers()[0].digest().as_ref())
             .unwrap();
         let unpack_dir = TempDir::new().unwrap();
         crate::bundle::layer::unpack_layer(layer_data, unpack_dir.path()).unwrap();
@@ -832,7 +831,7 @@ mod tests {
 
         // The final layer (stage 1) should contain mods/Mod.jar.
         let last_layer = image.manifest.layers().last().unwrap();
-        let layer_data = image.get_blob(&last_layer.digest().to_string()).unwrap();
+        let layer_data = image.get_blob(last_layer.digest().as_ref()).unwrap();
         let unpack_dir = TempDir::new().unwrap();
         crate::bundle::layer::unpack_layer(layer_data, unpack_dir.path()).unwrap();
         assert!(
@@ -861,7 +860,7 @@ mod tests {
         assert_eq!(image.manifest.layers().len(), 2);
 
         let last_layer = image.manifest.layers().last().unwrap();
-        let layer_data = image.get_blob(&last_layer.digest().to_string()).unwrap();
+        let layer_data = image.get_blob(last_layer.digest().as_ref()).unwrap();
         let unpack_dir = TempDir::new().unwrap();
         crate::bundle::layer::unpack_layer(layer_data, unpack_dir.path()).unwrap();
         assert!(unpack_dir.path().join("plugins/Plugin.jar").exists());
@@ -959,7 +958,7 @@ mod tests {
         assert_eq!(image.manifest.layers().len(), 1);
 
         let layer_data = image
-            .get_blob(&image.manifest.layers()[0].digest().to_string())
+            .get_blob(image.manifest.layers()[0].digest().as_ref())
             .unwrap();
         let unpack_dir = TempDir::new().unwrap();
         crate::bundle::layer::unpack_layer(layer_data, unpack_dir.path()).unwrap();

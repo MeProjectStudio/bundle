@@ -75,7 +75,7 @@ pub async fn run(args: PushArgs) -> Result<()> {
     // ── Show what we are about to push ────────────────────────────────────────
     eprintln!(
         "[push] manifest digest (pre-push): {}",
-        short(&image.manifest.config().digest().to_string())
+        short(image.manifest.config().digest().as_ref())
     );
     eprintln!("[push] layers:");
     for (i, layer) in image.manifest.layers().iter().enumerate() {

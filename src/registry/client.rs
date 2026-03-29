@@ -78,7 +78,7 @@ impl McpmRegistryClient {
         }
 
         // 2. Per-registry env-var credentials  (e.g. GHCR_IO_USERNAME).
-        let prefix = registry.to_uppercase().replace('.', "_").replace('-', "_");
+        let prefix = registry.to_uppercase().replace(['.', '-'], "_");
         if let Some(auth) = env_auth(&prefix) {
             return auth;
         }
@@ -332,8 +332,6 @@ async fn pull_blob_to_vec(
     image_ref: &str,
     descriptor: &Descriptor,
 ) -> Result<Vec<u8>> {
-
-
     let mut writer = AsyncVecWriter::new();
     client.pull_blob(image_ref, descriptor, &mut writer).await?;
     // pull_blob writes directly; no explicit flush needed for AsyncVecWriter,

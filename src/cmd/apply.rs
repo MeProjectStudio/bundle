@@ -182,7 +182,7 @@ pub async fn run(args: ApplyArgs) -> Result<()> {
         // Verify all layer blobs are cached.
         let mut missing: Vec<String> = Vec::new();
         for layer in manifest.layers() {
-            if !cache.has_blob(&layer.digest().to_string()) {
+            if !cache.has_blob(layer.digest().as_ref()) {
                 missing.push(layer.digest().to_string());
             }
         }

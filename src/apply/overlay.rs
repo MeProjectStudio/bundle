@@ -202,16 +202,13 @@ async fn apply_layer(
         let server_rel = strip_leading_slash(&tar_path);
         let server_rel_str = server_rel.to_string_lossy().to_string();
 
-        match entry.header().entry_type() {
-            tar::EntryType::Directory => {
-                if !dry_run {
-                    let dest = server_dir.join(&server_rel);
-                    std::fs::create_dir_all(&dest)
-                        .with_context(|| format!("creating directory: {}", dest.display()))?;
-                }
-                continue;
+        if entry.header().entry_type() == tar::EntryType::Directory {
+            if !dry_run {
+                let dest = server_dir.join(&server_rel);
+                std::fs::create_dir_all(&dest)
+                    .with_context(|| format!("creating directory: {}", dest.display()))?;
             }
-            _ => {}
+            continue;
         }
 
         // --- OCI whiteout entries ---
@@ -381,11 +378,10 @@ fn determine_dry_run_kind(
 
     // File exists — would we merge or overwrite?
     if let Some(keys) = managed_keys.get(server_rel) {
-        if !keys.is_empty() {
-            if detect_format(Path::new(server_rel)).is_some() {
+        if !keys.is_empty()
+            && detect_format(Path::new(server_rel)).is_some() {
                 return ChangeKind::WouldMerge;
             }
-        }
     }
 
     ChangeKind::WouldOverwrite
@@ -408,14 +404,13 @@ fn delete_directory_contents(dir: &Path, dry_run: bool) -> Result<Vec<String>> {
             .to_string_lossy()
             .to_string();
 
-        if !dry_run {
-            if path.is_file() || path.is_symlink() {
+        if !dry_run
+            && (path.is_file() || path.is_symlink()) {
                 std::fs::remove_file(path)
                     .with_context(|| format!("removing file: {}", path.display()))?;
             }
             // Directories are removed after their contents (WalkDir visits
             // depth-first by default, leaves before parents).
-        }
 
         if entry.file_type().is_file() || entry.file_type().is_symlink() {
             deleted.push(rel);
@@ -616,7 +611,7 @@ mod tests {
 
         let cache_dir = TempDir::new().unwrap();
         let cache = LocalCache::open_at(cache_dir.path()).unwrap();
-        for (_d, data) in &blobs {
+        for data in blobs.values() {
             cache.store_blob(data).unwrap();
         }
 
@@ -660,7 +655,7 @@ mod tests {
 
         let cache_dir = TempDir::new().unwrap();
         let cache = LocalCache::open_at(cache_dir.path()).unwrap();
-        for (_d, data) in &blobs {
+        for data in blobs.values() {
             cache.store_blob(data).unwrap();
         }
 
@@ -711,7 +706,7 @@ mod tests {
 
         let cache_dir = TempDir::new().unwrap();
         let cache = LocalCache::open_at(cache_dir.path()).unwrap();
-        for (_d, data) in &blobs {
+        for data in blobs.values() {
             cache.store_blob(data).unwrap();
         }
 
@@ -765,7 +760,7 @@ mod tests {
 
         let cache_dir = TempDir::new().unwrap();
         let cache = LocalCache::open_at(cache_dir.path()).unwrap();
-        for (_d, data) in &blobs {
+        for data in blobs.values() {
             cache.store_blob(data).unwrap();
         }
 
@@ -796,7 +791,7 @@ mod tests {
 
         let cache_dir = TempDir::new().unwrap();
         let cache = LocalCache::open_at(cache_dir.path()).unwrap();
-        for (_d, data) in &blobs {
+        for data in blobs.values() {
             cache.store_blob(data).unwrap();
         }
 
@@ -835,7 +830,7 @@ mod tests {
 
         let cache_dir = TempDir::new().unwrap();
         let cache = LocalCache::open_at(cache_dir.path()).unwrap();
-        for (_d, data) in &blobs {
+        for data in blobs.values() {
             cache.store_blob(data).unwrap();
         }
 

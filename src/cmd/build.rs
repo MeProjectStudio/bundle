@@ -137,7 +137,7 @@ pub async fn run(args: BuildArgs) -> Result<()> {
     );
     println!(
         "  config      : {}",
-        short(&image.manifest.config().digest().to_string())
+        short(image.manifest.config().digest().as_ref())
     );
     if let Some(ref ann) = image.manifest.annotations() {
         if let Some(mk) = ann.get(crate::bundle::annotations::MANAGED_KEYS_ANNOTATION) {

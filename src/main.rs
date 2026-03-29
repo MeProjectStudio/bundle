@@ -358,11 +358,11 @@ async fn run() -> Result<()> {
 /// - `KEY=VALUE` — use `VALUE` verbatim.
 /// - `KEY=`      — explicit empty string (overrides any Bundlefile default).
 /// - `KEY`       — no value: look up `$KEY` from the host environment.
-///                 If the variable is set, use its value.
-///                 If it is not set, the key is still added to the overrides
-///                 map with an empty string, which shadows the Bundlefile
-///                 `ARG KEY=default`.  This matches `docker build --build-arg KEY`
-///                 behaviour when the env var is absent.
+///   If the variable is set, use its value.
+///   If it is not set, the key is still added to the overrides
+///   map with an empty string, which shadows the Bundlefile
+///   `ARG KEY=default`.  This matches `docker build --build-arg KEY`
+///   behaviour when the env var is absent.
 fn parse_key_val(s: &str) -> Result<(String, String), String> {
     if let Some((key, value)) = s.split_once('=') {
         if key.is_empty() {
@@ -455,7 +455,6 @@ mod tests {
         assert!(matches!(cli.unwrap().command, Commands::Init));
     }
 
-    #[test]
     #[test]
     fn cli_version_parses() {
         let cli = Cli::try_parse_from(["bundle", "version"]);

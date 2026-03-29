@@ -419,10 +419,10 @@ fn parse_property_kv(line: &str) -> Option<(String, String)> {
 
     // Scan for end of key: first unescaped `=`, `:`, or whitespace.
     let mut key_end = line.len();
-    let mut chars = line.char_indices().peekable();
+    let chars = line.char_indices().peekable();
     let mut escaped = false;
 
-    while let Some((i, c)) = chars.next() {
+    for (i, c) in chars {
         if escaped {
             escaped = false;
             continue;
@@ -443,7 +443,7 @@ fn parse_property_kv(line: &str) -> Option<(String, String)> {
     }
 
     let after_key =
-        line[key_end..].trim_start_matches(|c: char| c == '=' || c == ':' || c == ' ' || c == '\t');
+        line[key_end..].trim_start_matches(['=', ':', ' ', '\t']);
     let value = after_key.to_string();
 
     Some((unescape_property(raw_key), unescape_property(&value)))

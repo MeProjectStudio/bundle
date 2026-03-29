@@ -27,7 +27,7 @@
 //!    a. Fetch the manifest from the registry.
 //!    b. Record the manifest digest in `bundle.lock`.
 //!    c. Download every layer blob (and config blob) not already in the
-//!       local cache (`~/.cache/bundle/blobs/sha256/`).
+//!    local cache (`~/.cache/bundle/blobs/sha256/`).
 //!    d. Store the manifest JSON in the local cache keyed by image ref.
 //! 3. Write `bundle.lock`.
 //!

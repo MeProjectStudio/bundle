@@ -211,32 +211,29 @@ fn ensure_parent_dirs(
     let mut prefix = PathBuf::new();
 
     for component in path.components() {
-        match component {
-            Component::Normal(c) => {
-                prefix.push(c);
-                // Don't add a directory entry for the file itself.
-                if prefix.as_os_str() == path.as_os_str() {
-                    break;
-                }
-                let dir_path = format!("{}/", prefix.to_string_lossy());
-                if !dirs_added.contains(&dir_path) {
-                    dirs_added.insert(dir_path.clone());
-                    let mut header = Header::new_gnu();
-                    header.set_entry_type(EntryType::Directory);
-                    header.set_mode(0o755);
-                    header.set_size(0);
-                    header.set_mtime(0);
-                    header.set_uid(0);
-                    header.set_gid(0);
-                    header.set_cksum();
-                    builder
-                        .append_data(&mut header, &dir_path, io::empty())
-                        .with_context(|| format!("appending parent dir '{}'", dir_path))?;
-                }
+        // Skip `.`, `..`, and root components — tar archives should use
+        // relative paths only.
+        if let Component::Normal(c) = component {
+            prefix.push(c);
+            // Don't add a directory entry for the file itself.
+            if prefix.as_os_str() == path.as_os_str() {
+                break;
             }
-            // Skip `.`, `..`, and root components — tar archives should use
-            // relative paths only.
-            _ => {}
+            let dir_path = format!("{}/", prefix.to_string_lossy());
+            if !dirs_added.contains(&dir_path) {
+                dirs_added.insert(dir_path.clone());
+                let mut header = Header::new_gnu();
+                header.set_entry_type(EntryType::Directory);
+                header.set_mode(0o755);
+                header.set_size(0);
+                header.set_mtime(0);
+                header.set_uid(0);
+                header.set_gid(0);
+                header.set_cksum();
+                builder
+                    .append_data(&mut header, &dir_path, io::empty())
+                    .with_context(|| format!("appending parent dir '{}'", dir_path))?;
+            }
         }
     }
     Ok(())
@@ -578,8 +575,7 @@ pub fn unpack_layer_dry_run(compressed: &[u8], dest_dir: &Path) -> Result<Unpack
             continue;
         }
 
-        if file_name.starts_with(".wh.") {
-            let real_name = &file_name[4..];
+        if let Some(real_name) = file_name.strip_prefix(".wh.") {
             let target = rel_path.parent().unwrap_or(Path::new("")).join(real_name);
             let dest_path = dest_dir.join(&target);
             if dest_path.exists() {

@@ -515,7 +515,7 @@ fn parse_flags(tokens: &[&str]) -> Result<(HashMap<String, String>, Vec<String>)
 /// Return a mutable reference to the most recently pushed stage.
 ///
 /// Fails with an actionable error when a directive appears before any `FROM`.
-fn current_stage_mut(stages: &mut Vec<Stage>, lineno: usize) -> Result<&mut Stage> {
+fn current_stage_mut(stages: &mut [Stage], lineno: usize) -> Result<&mut Stage> {
     stages
         .last_mut()
         .ok_or_else(|| anyhow::anyhow!("line {}: directive before any FROM", lineno))
