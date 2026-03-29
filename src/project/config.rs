@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -18,6 +17,16 @@ pub struct ServerConfig {
 /// [server]
 /// run = ["java", "-Xmx4G", "-jar", "server.jar", "nogui"]
 ///
+/// bundles = [
+///   "ghcr.io/someauthor/essentials:v2.20.1",
+///   "ghcr.io/me/bundle:latest",
+/// ]
+/// ```
+///
+/// ```toml
+/// [server]
+/// run = ["java", "-Xmx4G", "-jar", "server.jar", "nogui"]
+///
 /// [bundles]
 /// essentials = "ghcr.io/someauthor/essentials:v2.20.1"
 /// my-config  = "ghcr.io/me/my-server-bundle:latest"
@@ -26,9 +35,9 @@ pub struct ServerConfig {
 pub struct ProjectConfig {
     pub server: ServerConfig,
 
-    /// Map of logical bundle name → OCI image reference (tag-form, not digest).
+    /// OCI image references to apply to the server.
     #[serde(default)]
-    pub bundles: HashMap<String, String>,
+    pub bundles: Vec<String>,
 }
 
 impl ProjectConfig {
@@ -77,6 +86,6 @@ pub fn default_config() -> ProjectConfig {
                 "nogui".into(),
             ],
         },
-        bundles: HashMap::new(),
+        bundles: Vec::new(),
     }
 }

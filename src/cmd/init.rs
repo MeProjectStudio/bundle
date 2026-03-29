@@ -1,8 +1,6 @@
-
 use std::path::Path;
 
 use anyhow::{Context, Result};
-
 
 const BUNDLEFILE_TEMPLATE: &str = r#"# Bundlefile — defines one OCI bundle image.
 #
@@ -48,22 +46,20 @@ FROM scratch
 const BUNDLE_TOML_TEMPLATE: &str = r#"# bundle.toml — server bundle manifest.
 #
 # Commit this file alongside bundle.lock for reproducible server setups.
-# Run `bundle server init` in any server directory to create this file.
 
 [server]
 # Command executed by `bundle server run` to start the Minecraft server.
 run = ["java", "-Xmx4G", "-jar", "server.jar", "nogui"]
 
-[bundles]
-# Map logical bundle names to OCI image references.
+# OCI bundle images to apply to the server.
 # Tags are resolved to sha256 digests by `bundle server pull`.
 # Semver ranges are supported: "2.4" resolves to the latest 2.4.x release.
-#
-# essentials = "ghcr.io/someauthor/essentials:v2.20.1"
-# luckperms  = "ghcr.io/luckperms/luckperms:^5"
-# sodium     = "ghcr.io/jellysquid/sodium:~0.5"
+bundles = [
+  # "ghcr.io/someauthor/essentials:v2.20.1",
+  # "ghcr.io/luckperms/luckperms:^5",
+  # "ghcr.io/jellysquid/sodium:~0.5",
+]
 "#;
-
 
 /// Run `bundle init` in the current working directory.
 ///
@@ -106,7 +102,6 @@ pub fn init_bundlefile(dir: &Path) -> Result<()> {
     Ok(())
 }
 
-
 /// Run `bundle server init` in the current working directory.
 ///
 /// Scaffolds a `bundle.toml` for managing OCI bundles on a Minecraft server.
@@ -141,7 +136,7 @@ pub fn init_server_config(dir: &Path) -> Result<()> {
     println!("✓ bundle.toml created in {}", dir.display());
     println!();
     println!("Next steps:");
-    println!("  1. Edit bundle.toml to add bundle image references under [bundles].");
+    println!("  1. Edit bundle.toml to add bundle image references to the bundles array.");
     println!("  2. Run `bundle server pull`  — resolve tags and download layer blobs.");
     println!("  3. Run `bundle server apply` — extract bundles onto the server directory.");
     println!("  4. Run `bundle server run`   — apply + start the server process.");
@@ -152,12 +147,10 @@ pub fn init_server_config(dir: &Path) -> Result<()> {
     Ok(())
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use tempfile::TempDir;
-
 
     #[test]
     fn creates_bundlefile_in_empty_dir() {
@@ -222,7 +215,6 @@ mod tests {
         );
     }
 
-
     #[test]
     fn creates_bundle_toml_in_empty_dir() {
         let dir = TempDir::new().unwrap();
@@ -249,7 +241,10 @@ mod tests {
         init_server_config(dir.path()).unwrap();
         let content = std::fs::read_to_string(dir.path().join("bundle.toml")).unwrap();
         assert!(content.contains("[server]"), "should contain [server]");
-        assert!(content.contains("[bundles]"), "should contain [bundles]");
+        assert!(
+            content.contains("bundles = ["),
+            "should contain bundles array"
+        );
         assert!(
             content.contains("run ="),
             "should contain server.run example"
@@ -262,7 +257,7 @@ mod tests {
         init_server_config(dir.path()).unwrap();
 
         let raw = std::fs::read_to_string(dir.path().join("bundle.toml")).unwrap();
-        // Strip comment lines before parsing — some TOML parsers are strict.
+        // Strip comment lines before parsing.
         let without_comments: String = raw
             .lines()
             .map(|l| {
@@ -275,8 +270,7 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
 
-        toml::from_str::<toml::Value>(&without_comments)
-            .expect("bundle.toml (without comments) should be valid TOML");
+        toml::from_str::<toml::Value>(&without_comments).expect("bundle.toml should be valid TOML");
     }
 
     #[test]
@@ -311,7 +305,6 @@ mod tests {
             "existing bundle.toml must not be overwritten"
         );
     }
-
 
     #[test]
     fn both_inits_can_run_independently_in_same_dir() {

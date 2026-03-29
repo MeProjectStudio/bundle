@@ -11,7 +11,6 @@ use crate::registry::client::McpmRegistryClient;
 use crate::registry::semver as sv;
 use crate::registry::types::{Descriptor, LocalCache};
 
-
 /// Run `bundle pull`.
 pub async fn run() -> Result<()> {
     let config =
@@ -32,16 +31,13 @@ pub async fn run() -> Result<()> {
 
     let mut new_lock = LockFile::default();
 
-    // Sort bundles for deterministic output.
-    let mut bundles: Vec<(&String, &String)> = config.bundles.iter().collect();
-    bundles.sort_by_key(|(name, _)| name.as_str());
+    let mut bundles = config.bundles.clone();
+    bundles.sort();
 
-    for (name, image_ref) in bundles {
+    for image_ref in &bundles {
         println!();
-        println!("  bundle: {} ({})", name, image_ref);
+        println!("  bundle: {}", image_ref);
 
-        // Resolve semver range → concrete tag before pulling, so the lock file
-        // records the exact resolved tag (e.g. "v2.4.5") not the range ("2.4").
         let resolved_ref = if sv::is_range(image_ref) {
             match resolve_semver(&client, image_ref).await {
                 Ok(r) => {
@@ -60,26 +56,17 @@ pub async fn run() -> Result<()> {
             image_ref.clone()
         };
 
-        match pull_bundle(&client, &cache, name, &resolved_ref).await {
+        match pull_bundle(&client, &cache, &resolved_ref).await {
             Ok(digest) => {
                 println!("    ✓ digest: {}", short(&digest));
-                // Always key the lock entry by the original image_ref (which
-                // may be a range like "2.4") so that apply can look it up.
-                // The resolved_ref is recorded as the value so the exact tag
-                // is visible in the lock file alongside the digest.
                 if resolved_ref != *image_ref {
-                    // Store as "resolved_ref@digest" so the lock captures both.
                     new_lock.set_digest(image_ref.clone(), format!("{}@{}", resolved_ref, digest));
                 } else {
                     new_lock.set_digest(image_ref.clone(), digest);
                 }
             }
             Err(e) => {
-                // Surface the error but continue with remaining bundles so the
-                // operator can see all failures at once.
                 eprintln!("    ✗ error pulling '{}': {:#}", resolved_ref, e);
-                // Re-use any existing pinned digest so the lock file doesn't
-                // regress for the bundles that *did* succeed in a prior pull.
                 let existing_lock = LockFile::load().unwrap_or_default();
                 if let Some(existing_digest) = existing_lock.get_digest(image_ref) {
                     eprintln!("    ! keeping previous digest: {}", short(existing_digest));
@@ -98,7 +85,6 @@ pub async fn run() -> Result<()> {
 
     Ok(())
 }
-
 
 /// Resolve a semver range tag in `image_ref` to a concrete tag by listing all
 /// tags from the registry and picking the highest matching stable version.
@@ -124,13 +110,11 @@ async fn resolve_semver(client: &McpmRegistryClient, image_ref: &str) -> Result<
     Ok(sv::rewrite_tag(image_ref, &resolved_tag))
 }
 
-
 /// Pull one bundle: fetch its manifest, cache all layer blobs, and return
 /// the manifest digest.
 async fn pull_bundle(
     client: &McpmRegistryClient,
     cache: &LocalCache,
-    _name: &str,
     image_ref: &str,
 ) -> Result<String> {
     log!("  fetching manifest for {}", image_ref);
@@ -225,7 +209,6 @@ async fn pull_bundle(
     Ok(digest)
 }
 
-
 /// Download a single OCI blob (layer or config) and return the raw bytes.
 async fn download_blob(
     client: &McpmRegistryClient,
@@ -244,7 +227,6 @@ async fn download_blob(
         .context("flushing blob download buffer")?;
     Ok(writer.into_inner())
 }
-
 
 /// A minimal `tokio::io::AsyncWrite` impl that accumulates bytes into a Vec.
 struct AsyncVecWriter {
@@ -284,7 +266,6 @@ impl tokio::io::AsyncWrite for AsyncVecWriter {
         std::task::Poll::Ready(Ok(()))
     }
 }
-
 
 fn short(digest: &str) -> String {
     let hex = digest.strip_prefix("sha256:").unwrap_or(digest);

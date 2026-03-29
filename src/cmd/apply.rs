@@ -1,4 +1,3 @@
-
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
@@ -8,7 +7,6 @@ use crate::project::config::ProjectConfig;
 use crate::project::lock::LockFile;
 use crate::registry::client::McpmRegistryClient;
 use crate::registry::types::{ImageManifest, LocalCache};
-
 
 /// Arguments accepted by `bundle apply`.
 #[derive(Debug, Clone, Default)]
@@ -25,7 +23,6 @@ pub struct ApplyArgs {
     /// a separate pull step has already been run.
     pub no_pull: bool,
 }
-
 
 /// Run `bundle apply` (or `bundle diff` when `args.dry_run` is `true`).
 pub async fn run(args: ApplyArgs) -> Result<()> {
@@ -88,15 +85,12 @@ pub async fn run(args: ApplyArgs) -> Result<()> {
 
     let cache = LocalCache::open().context("opening local cache")?;
 
-    // Process bundles in deterministic order (sort by bundle name).
-    let mut bundle_names: Vec<&String> = project.bundles.keys().collect();
-    bundle_names.sort();
+    let mut bundle_refs = project.bundles.clone();
+    bundle_refs.sort();
 
     let mut bundles_to_apply: Vec<(String, ImageManifest)> = Vec::new();
 
-    for name in bundle_names {
-        let image_ref = &project.bundles[name];
-
+    for image_ref in &bundle_refs {
         // Resolve to a pinned digest if the lock file has one.
         let resolved_ref = if let Some(digest) = lock.get_digest(image_ref) {
             // Use the digest-pinned form for reproducibility.
@@ -114,10 +108,7 @@ pub async fn run(args: ApplyArgs) -> Result<()> {
             image_ref.clone()
         };
 
-        eprintln!(
-            "[{}] resolving bundle '{}' → {}",
-            action, name, resolved_ref
-        );
+        eprintln!("[{}] resolving {} → {}", action, image_ref, resolved_ref);
 
         // Try to load from cache first.
         let manifest = if cache.has_manifest(&resolved_ref) {
@@ -135,8 +126,8 @@ pub async fn run(args: ApplyArgs) -> Result<()> {
                 .await
                 .with_context(|| {
                     format!(
-                        "pulling bundle '{}' ({}) — run `bundle pull` first",
-                        name, resolved_ref
+                        "pulling bundle '{}' — run `bundle pull` first",
+                        resolved_ref
                     )
                 })?
         };
@@ -153,14 +144,14 @@ pub async fn run(args: ApplyArgs) -> Result<()> {
                 "[{}]   {} layer blob(s) missing from cache for '{}', pulling…",
                 action,
                 missing.len(),
-                name
+                image_ref
             );
             pull_layers_to_cache(&resolved_ref, &manifest, &cache)
                 .await
                 .with_context(|| {
                     format!(
                         "fetching missing layer blobs for bundle '{}' — run `bundle pull`",
-                        name
+                        image_ref
                     )
                 })?;
         }
@@ -205,7 +196,6 @@ pub async fn run(args: ApplyArgs) -> Result<()> {
 
     Ok(())
 }
-
 
 /// Pull a bundle manifest from the registry and store it in the local cache.
 /// Returns the parsed `ImageManifest`.
