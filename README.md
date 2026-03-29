@@ -1,9 +1,9 @@
 # bundle
 
-Declarative management system for Minecraft plugins and mods on servers
+Declarative mod management system for Minecraft servers using OCI images
 
-1. Define your plugin as **Bundle** using `Bundlefile` and build an OCI complaint image for your plugin
-2. Push it to OCI registry (ghcr, docker)
+1. Define your plugin (or multiple plugins) as a **Bundle** using `Bundlefile` and build an OCI complaint image for your plugin
+2. Push it to OCI registry (ghcr, docker, selfhosted)
 3. Use `bundle server run` to pull an image and run your server with plugin versions from OCI registry
 
 
