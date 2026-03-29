@@ -28,12 +28,6 @@
 //! ## Dry-run
 //!
 //! Pass `dry_run = true` to report what *would* change without touching disk.
-//!
-//! ## No remapping
-//!
-//! The old `bundles/jars/ → plugins/` remapping has been removed.  Layers are
-//! extracted exactly as packed; the declared `dest` path in the Bundlefile is
-//! what ends up on disk.
 
 use std::path::{Path, PathBuf};
 
@@ -43,7 +37,6 @@ use oci_spec::image::ImageManifest;
 use crate::apply::merge::{detect_format, merge_config};
 use crate::bundle::annotations::{from_manifest_annotations, ManagedKeys};
 use crate::registry::types::LocalCache;
-
 
 /// A single file-level change produced by [`apply_bundles`].
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -104,7 +97,6 @@ impl ChangeKind {
     }
 }
 
-
 /// Apply (or diff) one or more bundles onto `server_dir`.
 ///
 /// `bundles` is a list of `(image_ref, manifest)` pairs taken from `bundle.lock`
@@ -162,7 +154,6 @@ pub async fn apply_bundles(
 
     Ok(all_changes)
 }
-
 
 /// Apply a single gzip-compressed layer to `server_dir`.
 ///
@@ -301,7 +292,6 @@ async fn apply_layer(
     Ok(changes)
 }
 
-
 /// Apply a single file to `dest_path`, using config merge if appropriate.
 ///
 /// Returns the [`ChangeKind`] that describes what happened.
@@ -374,15 +364,13 @@ fn determine_dry_run_kind(
 
     // File exists — would we merge or overwrite?
     if let Some(keys) = managed_keys.get(server_rel) {
-        if !keys.is_empty()
-            && detect_format(Path::new(server_rel)).is_some() {
-                return ChangeKind::WouldMerge;
-            }
+        if !keys.is_empty() && detect_format(Path::new(server_rel)).is_some() {
+            return ChangeKind::WouldMerge;
+        }
     }
 
     ChangeKind::WouldOverwrite
 }
-
 
 /// Delete the *contents* of `dir` (not the directory itself) and return the
 /// list of server-root-relative paths that were (or would be) deleted.
@@ -399,13 +387,12 @@ fn delete_directory_contents(dir: &Path, dry_run: bool) -> Result<Vec<String>> {
             .to_string_lossy()
             .to_string();
 
-        if !dry_run
-            && (path.is_file() || path.is_symlink()) {
-                std::fs::remove_file(path)
-                    .with_context(|| format!("removing file: {}", path.display()))?;
-            }
-            // Directories are removed after their contents (WalkDir visits
-            // depth-first by default, leaves before parents).
+        if !dry_run && (path.is_file() || path.is_symlink()) {
+            std::fs::remove_file(path)
+                .with_context(|| format!("removing file: {}", path.display()))?;
+        }
+        // Directories are removed after their contents (WalkDir visits
+        // depth-first by default, leaves before parents).
 
         if entry.file_type().is_file() || entry.file_type().is_symlink() {
             deleted.push(rel);
@@ -428,7 +415,6 @@ fn delete_directory_contents(dir: &Path, dry_run: bool) -> Result<Vec<String>> {
 
     Ok(deleted)
 }
-
 
 /// Pretty-print a list of changes to stdout in a human-readable format.
 ///
@@ -473,7 +459,6 @@ pub fn print_changes(changes: &[FileChange]) {
     );
 }
 
-
 /// Strip a leading `/` from a path.
 fn strip_leading_slash(path: &Path) -> PathBuf {
     path.strip_prefix("/").unwrap_or(path).to_path_buf()
@@ -499,7 +484,6 @@ fn short_digest(digest: &str) -> String {
     let hex = digest.strip_prefix("sha256:").unwrap_or(digest);
     format!("sha256:{}", &hex[..hex.len().min(12)])
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -585,7 +569,6 @@ mod tests {
         (packed.digest, packed.compressed)
     }
 
-
     /// The dest path in the layer is used verbatim — plugins go to plugins/,
     /// mods go to mods/, whatever the Bundlefile author declared.
     #[tokio::test]
@@ -666,7 +649,6 @@ mod tests {
         );
     }
 
-
     #[tokio::test]
     async fn config_file_merged_with_managed_keys() {
         let server_dir = TempDir::new().unwrap();
@@ -729,7 +711,6 @@ mod tests {
         );
     }
 
-
     #[tokio::test]
     async fn jar_file_always_overwritten() {
         let server_dir = TempDir::new().unwrap();
@@ -765,7 +746,6 @@ mod tests {
         let content = std::fs::read(&jar_path).unwrap();
         assert_eq!(content, b"new-jar-bytes");
     }
-
 
     #[tokio::test]
     async fn dry_run_does_not_write() {
@@ -838,7 +818,6 @@ mod tests {
         assert_eq!(std::fs::read(&config_path).unwrap(), b"key: disk\n");
     }
 
-
     #[tokio::test]
     async fn multiple_bundles_applied_in_order() {
         let server_dir = TempDir::new().unwrap();
@@ -878,7 +857,6 @@ mod tests {
         );
     }
 
-
     #[test]
     fn print_changes_no_panic_on_empty() {
         print_changes(&[]);
@@ -906,7 +884,6 @@ mod tests {
         ];
         print_changes(&changes);
     }
-
 
     #[test]
     fn change_kind_is_dry_run() {
