@@ -25,6 +25,8 @@ use serde::{Deserialize, Serialize};
 pub use oci_spec::image::{
     // Config
     Arch,
+    // Runtime config (labels, entrypoint, etc.)
+    ConfigBuilder as OciRuntimeConfigBuilder,
     // Manifest + descriptor
     Descriptor,
     ImageConfiguration,
@@ -37,23 +39,34 @@ pub use oci_spec::image::{
     SCHEMA_VERSION,
 };
 
-/// Construct a minimal spec-compliant OCI image config for an mcpm bundle.
+/// Construct a spec-compliant OCI image config for a bundle.
 ///
-/// `diff_ids` are the sha256 digests of the **uncompressed** layer tarballs,
-/// in the same order as the manifest's `layers` array.
-pub fn build_image_config(diff_ids: Vec<String>) -> Result<ImageConfiguration> {
+/// `diff_ids` are the sha256 digests of the **uncompressed** layer tarballs.
+/// `labels` are embedded in the OCI `Config.Labels` field (empty map → no Config section).
+pub fn build_image_config(
+    diff_ids: Vec<String>,
+    labels: std::collections::HashMap<String, String>,
+) -> Result<ImageConfiguration> {
     let rootfs = RootFsBuilder::default()
         .typ("layers".to_owned())
         .diff_ids(diff_ids)
         .build()
         .context("building OCI RootFs")?;
 
-    ImageConfigurationBuilder::default()
+    let mut builder = ImageConfigurationBuilder::default()
         .architecture(Arch::Amd64)
         .os(Os::Linux)
-        .rootfs(rootfs)
-        .build()
-        .context("building OCI ImageConfiguration")
+        .rootfs(rootfs);
+
+    if !labels.is_empty() {
+        let runtime_config = OciRuntimeConfigBuilder::default()
+            .labels(labels)
+            .build()
+            .context("building OCI runtime config")?;
+        builder = builder.config(runtime_config);
+    }
+
+    builder.build().context("building OCI ImageConfiguration")
 }
 
 /// Serialise an [`ImageConfiguration`] to canonical JSON bytes.
@@ -66,7 +79,6 @@ pub fn image_config_to_bytes(config: &ImageConfiguration) -> Result<Vec<u8>> {
         .map(|s| s.into_bytes())
         .context("serialising OCI image config to JSON")
 }
-
 
 /// A fully assembled OCI image that has been built locally by `bundle build`.
 ///
@@ -121,7 +133,6 @@ impl LocalImage {
     }
 }
 
-
 /// Filesystem cache for OCI blobs and manifests.
 ///
 /// Layout under `base_dir` (default: `~/.cache/mcpm/`):
@@ -159,7 +170,6 @@ impl LocalCache {
             .with_context(|| format!("creating bundle cache directory: {}", base.display()))?;
         Ok(LocalCache { base_dir: base })
     }
-
 
     fn blob_path(&self, digest: &str) -> PathBuf {
         // digest is "sha256:<hex>" — strip the prefix for the filename.
@@ -203,7 +213,6 @@ impl LocalCache {
     pub fn has_blob(&self, digest: &str) -> bool {
         self.blob_path(digest).exists()
     }
-
 
     fn manifest_path(&self, image_ref: &str) -> PathBuf {
         // Escape characters that are invalid in filenames.
@@ -267,7 +276,6 @@ impl LocalCache {
     pub fn has_manifest(&self, image_ref: &str) -> bool {
         self.manifest_path(image_ref).exists()
     }
-
 
     fn built_dir(&self) -> PathBuf {
         self.base_dir.join("built")
@@ -356,7 +364,6 @@ impl LocalCache {
     }
 }
 
-
 /// A compact on-disk record that associates a logical bundle name with the
 /// digest of its manifest.  Written by `bundle pull` and read by `bundle apply`.
 #[allow(dead_code)]
@@ -367,7 +374,6 @@ pub struct PulledBundle {
     /// The manifest digest, e.g. `"sha256:abc123..."`.
     pub digest: String,
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -422,13 +428,37 @@ mod tests {
 
     #[test]
     fn image_config_serialises() {
-        let cfg = build_image_config(vec!["sha256:aaa".into(), "sha256:bbb".into()]).unwrap();
+        let cfg = build_image_config(
+            vec!["sha256:aaa".into(), "sha256:bbb".into()],
+            std::collections::HashMap::new(),
+        )
+        .unwrap();
         let bytes = image_config_to_bytes(&cfg).unwrap();
         let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(v["os"], "linux");
         assert_eq!(v["architecture"], "amd64");
         assert_eq!(v["rootfs"]["type"], "layers");
         assert_eq!(v["rootfs"]["diff_ids"][0], "sha256:aaa");
+    }
+
+    #[test]
+    fn image_config_labels_round_trip() {
+        let mut labels = std::collections::HashMap::new();
+        labels.insert(
+            "org.opencontainers.image.version".to_string(),
+            "1.2.3".to_string(),
+        );
+        labels.insert("maintainer".to_string(), "alice@example.com".to_string());
+
+        let cfg = build_image_config(vec!["sha256:aaa".into()], labels).unwrap();
+        let bytes = image_config_to_bytes(&cfg).unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+
+        assert_eq!(
+            v["config"]["Labels"]["org.opencontainers.image.version"],
+            "1.2.3"
+        );
+        assert_eq!(v["config"]["Labels"]["maintainer"], "alice@example.com");
     }
 
     #[test]

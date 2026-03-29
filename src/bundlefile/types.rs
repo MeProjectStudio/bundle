@@ -115,23 +115,14 @@ pub struct ManageDirective {
 /// A new stage begins with each `FROM` directive.
 #[derive(Debug, Clone)]
 pub struct Stage {
-    /// The base image reference for this stage (e.g. `ghcr.io/author/bundle:v1`),
-    /// or `"scratch"` for a stage with no base image.
     pub from: String,
-
-    /// Optional name assigned with `FROM <image> AS <name>`.
-    ///
-    /// Used to reference this stage from `COPY --from=<name>` in a later stage.
     pub name: Option<String>,
-
-    /// All `ADD` directives in this stage, in declaration order.
     pub adds: Vec<AddDirective>,
-
-    /// All `COPY` directives in this stage, in declaration order.
     pub copies: Vec<CopyDirective>,
-
-    /// All `MANAGE` directives in this stage.
     pub manages: Vec<ManageDirective>,
+    /// Key-value labels to embed in the OCI image config (`LABEL` directives).
+    /// Later stages override earlier ones for the same key.
+    pub labels: HashMap<String, String>,
 }
 
 impl Stage {
@@ -142,6 +133,7 @@ impl Stage {
             adds: Vec::new(),
             copies: Vec::new(),
             manages: Vec::new(),
+            labels: HashMap::new(),
         }
     }
 }

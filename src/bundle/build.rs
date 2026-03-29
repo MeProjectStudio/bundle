@@ -48,7 +48,6 @@ use crate::registry::types::{
 use crate::util::digest::sha256_digest;
 use crate::util::fetch::fetch_url;
 
-
 /// Build a `LocalImage` from the `Bundlefile` at `bundlefile_path`.
 ///
 /// `cli_overrides` contains `--build-arg KEY=VAL` pairs from the command line;
@@ -83,6 +82,7 @@ pub async fn build_from_parsed(bundlefile: &Bundlefile, root_dir: &Path) -> Resu
     let mut all_diff_ids: Vec<String> = Vec::new();
     let mut new_blobs: HashMap<String, Vec<u8>> = HashMap::new();
     let mut accumulated_managed_keys: ManagedKeys = ManagedKeys::new();
+    let mut accumulated_labels: HashMap<String, String> = HashMap::new();
     let mut stage_outputs: StageOutputs = Vec::new();
 
     for (stage_idx, stage) in bundlefile.stages.iter().enumerate() {
@@ -194,9 +194,13 @@ pub async fn build_from_parsed(bundlefile: &Bundlefile, root_dir: &Path) -> Resu
 
         let stage_keys = annotations::from_manage_directives(&stage.manages);
         accumulated_managed_keys = annotations::merge(accumulated_managed_keys, stage_keys);
+
+        // Labels accumulate across stages; later stages override earlier ones.
+        accumulated_labels.extend(stage.labels.iter().map(|(k, v)| (k.clone(), v.clone())));
     }
 
-    let image_config = build_image_config(all_diff_ids).context("building OCI image config")?;
+    let image_config = build_image_config(all_diff_ids, accumulated_labels)
+        .context("building OCI image config")?;
     let config_data =
         image_config_to_bytes(&image_config).context("serialising OCI image config")?;
     let config_digest = sha256_digest(&config_data);
@@ -261,13 +265,11 @@ pub async fn build_from_parsed(bundlefile: &Bundlefile, root_dir: &Path) -> Resu
     })
 }
 
-
 /// Tracks each stage's output file tree for `COPY --from=<stage>` resolution.
 ///
 /// `stage_outputs[i]` maps server-root-relative path → raw file bytes for
 /// every file written by stage `i`.
 type StageOutputs = Vec<HashMap<String, Vec<u8>>>;
-
 
 /// Resolve an [`AddDirective`] into a list of `(dest_path, bytes)` pairs.
 ///
@@ -331,7 +333,6 @@ async fn fetch_remote(url: &str, explicit_checksum: Option<&str>) -> Result<Vec<
 
     Ok(data)
 }
-
 
 /// Resolve a [`CopyDirective`] into `(dest_path, bytes)` pairs.
 ///
@@ -444,7 +445,6 @@ fn resolve_stage_ref(stage_ref: &str, all_stages: &[Stage], num_built: usize) ->
     );
 }
 
-
 /// Collect [`LayerEntry`] values for an `ADD <src> <dest>` directive.
 ///
 /// - If `src_path` is a directory, it is walked recursively and all files are
@@ -491,7 +491,6 @@ fn collect_add_entries_for_path(src_path: &Path, dest: &str) -> Result<Vec<Layer
         }])
     }
 }
-
 
 /// Fetch the layer descriptors, diff_ids, and managed-keys annotation of an
 /// existing OCI image so that they can be inherited by the current build.
@@ -577,7 +576,6 @@ async fn fetch_base_image_info(
     Ok((manifest.layers().to_vec(), diff_ids, managed_keys))
 }
 
-
 struct AsyncVecWriter {
     buf: Vec<u8>,
 }
@@ -614,7 +612,6 @@ impl tokio::io::AsyncWrite for AsyncVecWriter {
     }
 }
 
-
 /// Construct an OCI layer descriptor from a [`PackedLayer`].
 fn make_layer_descriptor(packed: &PackedLayer) -> Descriptor {
     use std::str::FromStr as _;
@@ -626,7 +623,6 @@ fn make_layer_descriptor(packed: &PackedLayer) -> Descriptor {
         .expect("packed layer digest is always valid sha256");
     Descriptor::new(MediaType::ImageLayerGzip, packed.size, sha256)
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -687,7 +683,6 @@ mod tests {
         let result = collect_add_entries_for_path(Path::new("/nonexistent/path"), "plugins/x/");
         assert!(result.is_err());
     }
-
 
     #[tokio::test]
     async fn build_single_stage_local_add() {
@@ -767,7 +762,6 @@ mod tests {
         // No lock file interaction expected — just verify build succeeds.
     }
 
-
     #[tokio::test]
     async fn build_copy_local_behaves_like_add() {
         let dir = TempDir::new().unwrap();
@@ -786,7 +780,6 @@ mod tests {
         crate::bundle::layer::unpack_layer(layer_data, unpack_dir.path()).unwrap();
         assert!(unpack_dir.path().join("plugins/Plugin.jar").exists());
     }
-
 
     #[tokio::test]
     async fn build_copy_from_stage_by_index() {
@@ -846,7 +839,6 @@ mod tests {
         assert!(unpack_dir.path().join("plugins/Plugin.jar").exists());
     }
 
-
     #[tokio::test]
     async fn build_manage_sets_annotation() {
         let dir = TempDir::new().unwrap();
@@ -904,7 +896,6 @@ mod tests {
         assert_eq!(managed["plugins/B/config.yml"], vec!["b.key"]);
     }
 
-
     #[tokio::test]
     async fn build_arg_substitution_in_add_dest() {
         let dir = TempDir::new().unwrap();
@@ -942,7 +933,6 @@ mod tests {
         crate::bundle::layer::unpack_layer(layer_data, unpack_dir.path()).unwrap();
         assert!(unpack_dir.path().join("plugins/Plugin-2.0.jar").exists());
     }
-
 
     #[tokio::test]
     async fn build_config_blob_in_new_blobs() {

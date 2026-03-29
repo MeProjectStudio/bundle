@@ -150,6 +150,16 @@ pub fn parse(content: &str, cli_overrides: &HashMap<String, String>) -> Result<B
                 stage.copies.push(copy);
             }
 
+            "LABEL" => {
+                let scope = stage_args
+                    .last()
+                    .ok_or_else(|| anyhow::anyhow!("line {}: LABEL before any FROM", lineno + 1))?;
+                let stage = current_stage_mut(&mut stages, lineno + 1)?;
+                let pairs = parse_label_pairs(&substitute(rest.trim(), scope))
+                    .with_context(|| format!("line {}: LABEL parse error", lineno + 1))?;
+                stage.labels.extend(pairs);
+            }
+
             "MANAGE" => {
                 let scope = stage_args.last().ok_or_else(|| {
                     anyhow::anyhow!("line {}: MANAGE before any FROM", lineno + 1)
@@ -172,7 +182,7 @@ pub fn parse(content: &str, cli_overrides: &HashMap<String, String>) -> Result<B
             other => {
                 bail!(
                     "line {}: unknown directive '{}'; \
-                     expected one of ARG, FROM, ADD, COPY, MANAGE",
+                     expected one of ARG, FROM, ADD, COPY, LABEL, MANAGE",
                     lineno + 1,
                     other
                 );
@@ -515,6 +525,83 @@ fn parse_flags(tokens: &[&str]) -> Result<(HashMap<String, String>, Vec<String>)
 /// Return a mutable reference to the most recently pushed stage.
 ///
 /// Fails with an actionable error when a directive appears before any `FROM`.
+/// Parse a `LABEL` line into key=value pairs.
+///
+/// Supports:
+/// - `key=value`
+/// - `key="value with spaces"`
+/// - `key1=val1 key2=val2` (multiple per line)
+/// - Backslash escapes inside quoted values
+fn parse_label_pairs(s: &str) -> Result<std::collections::HashMap<String, String>> {
+    let mut result = std::collections::HashMap::new();
+    let mut chars = s.char_indices().peekable();
+
+    loop {
+        // Skip whitespace between pairs.
+        while chars
+            .peek()
+            .map(|(_, c)| c.is_whitespace())
+            .unwrap_or(false)
+        {
+            chars.next();
+        }
+        if chars.peek().is_none() {
+            break;
+        }
+
+        // Read key (up to '=').
+        let mut key = String::new();
+        loop {
+            match chars.peek() {
+                None | Some((_, '=')) => {
+                    chars.next();
+                    break;
+                }
+                Some((_, c)) if c.is_whitespace() => break,
+                Some((_, c)) => {
+                    key.push(*c);
+                    chars.next();
+                }
+            }
+        }
+        if key.is_empty() {
+            break;
+        }
+
+        // Read value — quoted or unquoted.
+        let value = if chars.peek().map(|(_, c)| *c == '"').unwrap_or(false) {
+            chars.next(); // consume opening '"'
+            let mut v = String::new();
+            loop {
+                match chars.next() {
+                    None | Some((_, '"')) => break,
+                    Some((_, '\\')) => {
+                        if let Some((_, escaped)) = chars.next() {
+                            v.push(escaped);
+                        }
+                    }
+                    Some((_, c)) => v.push(c),
+                }
+            }
+            v
+        } else {
+            let mut v = String::new();
+            while chars
+                .peek()
+                .map(|(_, c)| !c.is_whitespace())
+                .unwrap_or(false)
+            {
+                v.push(chars.next().unwrap().1);
+            }
+            v
+        };
+
+        result.insert(key, value);
+    }
+
+    Ok(result)
+}
+
 fn current_stage_mut(stages: &mut [Stage], lineno: usize) -> Result<&mut Stage> {
     stages
         .last_mut()
@@ -751,6 +838,70 @@ mod tests {
     }
 
     // ── FROM ──────────────────────────────────────────────────────────────────
+
+    // ── LABEL ─────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn label_single_pair() {
+        let src = "FROM scratch\nLABEL version=1.0\n";
+        let bf = parse(src, &no_overrides()).unwrap();
+        assert_eq!(
+            bf.stages[0].labels.get("version").map(String::as_str),
+            Some("1.0")
+        );
+    }
+
+    #[test]
+    fn label_multiple_pairs_on_one_line() {
+        let src = "FROM scratch\nLABEL a=1 b=2 c=3\n";
+        let bf = parse(src, &no_overrides()).unwrap();
+        assert_eq!(bf.stages[0].labels.get("a").map(String::as_str), Some("1"));
+        assert_eq!(bf.stages[0].labels.get("b").map(String::as_str), Some("2"));
+        assert_eq!(bf.stages[0].labels.get("c").map(String::as_str), Some("3"));
+    }
+
+    #[test]
+    fn label_quoted_value_with_spaces() {
+        let src = "FROM scratch\nLABEL description=\"hello world\"\n";
+        let bf = parse(src, &no_overrides()).unwrap();
+        assert_eq!(
+            bf.stages[0].labels.get("description").map(String::as_str),
+            Some("hello world")
+        );
+    }
+
+    #[test]
+    fn label_arg_substitution() {
+        let src = "ARG VER=2.0\nFROM scratch\nLABEL version=${VER}\n";
+        let bf = parse(src, &no_overrides()).unwrap();
+        assert_eq!(
+            bf.stages[0].labels.get("version").map(String::as_str),
+            Some("2.0")
+        );
+    }
+
+    #[test]
+    fn label_accumulates_across_directives() {
+        let src = "FROM scratch\nLABEL a=1\nLABEL b=2\n";
+        let bf = parse(src, &no_overrides()).unwrap();
+        assert_eq!(bf.stages[0].labels.len(), 2);
+    }
+
+    #[test]
+    fn label_later_overrides_earlier_same_key() {
+        let src = "FROM scratch\nLABEL key=first\nLABEL key=second\n";
+        let bf = parse(src, &no_overrides()).unwrap();
+        assert_eq!(
+            bf.stages[0].labels.get("key").map(String::as_str),
+            Some("second")
+        );
+    }
+
+    #[test]
+    fn label_before_from_is_error() {
+        let src = "LABEL key=val\nFROM scratch\n";
+        assert!(parse(src, &no_overrides()).is_err());
+    }
 
     // ── ARG scoping ───────────────────────────────────────────────────────────
     #[test]
