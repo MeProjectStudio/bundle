@@ -1,0 +1,3 @@
+FROM scratch
+
+ADD https://cdn.modrinth.com/data/1u6JkXh5/versions/JUWRHdru/worldedit-bukkit-7.4.1.jar plugins/worldedit.jar

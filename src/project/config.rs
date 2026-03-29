@@ -1,0 +1,82 @@
+use std::collections::HashMap;
+use std::fs;
+use std::path::{Path, PathBuf};
+
+use anyhow::{Context, Result};
+use serde::{Deserialize, Serialize};
+
+/// The `[server]` section of `bundle.toml`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ServerConfig {
+    /// Command to exec when running the server (e.g. `["java", "-jar", "server.jar"]`).
+    pub run: Vec<String>,
+}
+
+/// Top-level `bundle.toml` project manifest.
+///
+/// ```toml
+/// [server]
+/// run = ["java", "-Xmx4G", "-jar", "server.jar", "nogui"]
+///
+/// [bundles]
+/// essentials = "ghcr.io/someauthor/essentials:v2.20.1"
+/// my-config  = "ghcr.io/me/my-server-bundle:latest"
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProjectConfig {
+    pub server: ServerConfig,
+
+    /// Map of logical bundle name → OCI image reference (tag-form, not digest).
+    #[serde(default)]
+    pub bundles: HashMap<String, String>,
+}
+
+impl ProjectConfig {
+    /// Load `bundle.toml` from `dir` (normally the current working directory).
+    pub fn load_from(dir: &Path) -> Result<Self> {
+        let path = dir.join("bundle.toml");
+        let raw =
+            fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
+        let cfg: ProjectConfig =
+            toml::from_str(&raw).with_context(|| format!("parsing {}", path.display()))?;
+        Ok(cfg)
+    }
+
+    /// Load `bundle.toml` from the current working directory.
+    pub fn load() -> Result<Self> {
+        let cwd = std::env::current_dir().context("getting current directory")?;
+        Self::load_from(&cwd)
+    }
+
+    /// Canonical path of the `bundle.toml` file relative to `dir`.
+    #[allow(dead_code)]
+    pub fn path_in(dir: &Path) -> PathBuf {
+        dir.join("bundle.toml")
+    }
+
+    /// Write this config back to `bundle.toml` in `dir`.
+    #[allow(dead_code)]
+    pub fn save_to(&self, dir: &Path) -> Result<()> {
+        let path = dir.join("bundle.toml");
+        let raw = toml::to_string_pretty(self).context("serialising project config")?;
+        fs::write(&path, raw).with_context(|| format!("writing {}", path.display()))?;
+        Ok(())
+    }
+}
+
+/// Produce a minimal starter `bundle.toml` for `bundle init`.
+#[allow(dead_code)]
+pub fn default_config() -> ProjectConfig {
+    ProjectConfig {
+        server: ServerConfig {
+            run: vec![
+                "java".into(),
+                "-Xmx4G".into(),
+                "-jar".into(),
+                "server.jar".into(),
+                "nogui".into(),
+            ],
+        },
+        bundles: HashMap::new(),
+    }
+}
