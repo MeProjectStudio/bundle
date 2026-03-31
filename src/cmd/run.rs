@@ -22,6 +22,11 @@ pub struct RunArgs {
 
     /// If set, treat this directory as the server root instead of `$PWD`.
     pub server_dir: Option<PathBuf>,
+
+    /// If `true`, skip files that would override paths listed in
+    /// `server.deny-override` rather than failing hard.  The dangerous files
+    /// are never written; the operation just continues instead of aborting.
+    pub ignore_dangerous_override_attempts: bool,
 }
 
 /// Run `bundle run` — like `docker compose up`.
@@ -48,6 +53,7 @@ pub async fn run(args: RunArgs) -> Result<()> {
             server_dir: Some(server_dir.clone()),
             dry_run: false,
             no_pull: args.no_pull,
+            ignore_dangerous_override_attempts: args.ignore_dangerous_override_attempts,
         })
         .await
         .context("apply step failed (use --no-apply to skip)")?;
@@ -228,6 +234,7 @@ mod tests {
             no_pull: true,
             no_apply: false,
             server_dir: None,
+            ignore_dangerous_override_attempts: false,
         };
         assert!(args.no_pull);
         assert!(!args.no_apply);

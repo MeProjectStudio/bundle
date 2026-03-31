@@ -55,6 +55,7 @@ bundles = [
 
 [server]
 run = ["java", "-Xmx4G", "-jar", "server.jar", "nogui"]
+deny-override = ["bundle", "bundle.exe", "bundle.lock", "bundle.toml", "server.jar"]
 "#;
 
 /// Run `bundle init` in the current working directory.

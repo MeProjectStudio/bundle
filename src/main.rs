@@ -18,7 +18,6 @@ use clap::{Parser, Subcommand, ValueHint};
     name = "bundle",
     bin_name = "bundle",
     about = "Minecraft server bundle manager via OCI containers",
-    version,
     author
 )]
 struct Cli {
@@ -133,6 +132,12 @@ enum ServerCommands {
         /// Skip pull and apply from the local cache only.
         #[arg(long)]
         no_pull: bool,
+
+        /// Skip files that would override paths listed in server.deny-override
+        /// instead of failing hard. The dangerous files are never written; the
+        /// operation just continues instead of aborting.
+        #[arg(long)]
+        ignore_dangerous_override_attempts: bool,
     },
 
     /// Show what `bundle server apply` would change without writing anything.
@@ -156,6 +161,12 @@ enum ServerCommands {
         /// Server root directory. Defaults to the current directory.
         #[arg(long, value_name = "PATH", value_hint = ValueHint::DirPath)]
         server_dir: Option<PathBuf>,
+
+        /// Skip files that would override paths listed in server.deny-override
+        /// instead of failing hard. The dangerous files are never written; the
+        /// operation just continues instead of aborting.
+        #[arg(long)]
+        ignore_dangerous_override_attempts: bool,
     },
 }
 
@@ -238,11 +249,13 @@ async fn run() -> Result<()> {
             ServerCommands::Apply {
                 server_dir,
                 no_pull,
+                ignore_dangerous_override_attempts,
             } => {
                 cmd::apply::run(cmd::apply::ApplyArgs {
                     server_dir,
                     dry_run: false,
                     no_pull,
+                    ignore_dangerous_override_attempts,
                 })
                 .await
                 .context("bundle server apply failed")?;
@@ -258,11 +271,13 @@ async fn run() -> Result<()> {
                 no_pull,
                 no_apply,
                 server_dir,
+                ignore_dangerous_override_attempts,
             } => {
                 cmd::run::run(cmd::run::RunArgs {
                     no_pull,
                     no_apply,
                     server_dir,
+                    ignore_dangerous_override_attempts,
                 })
                 .await
                 .context("bundle server run failed")?;
@@ -581,6 +596,7 @@ mod tests {
                     no_pull,
                     no_apply,
                     server_dir,
+                    ignore_dangerous_override_attempts: _,
                 }),
         }) = cli
         {

@@ -113,6 +113,8 @@ pub async fn apply_bundles(
     cache: &LocalCache,
     server_dir: &Path,
     dry_run: bool,
+    deny_override: &[String],
+    ignore_dangerous_override_attempts: bool,
 ) -> Result<Vec<FileChange>> {
     let mut all_changes: Vec<FileChange> = Vec::new();
 
@@ -144,9 +146,17 @@ pub async fn apply_bundles(
                 )
             })?;
 
-            let changes = apply_layer(&compressed, &managed_keys, server_dir, dry_run)
-                .await
-                .with_context(|| format!("applying layer {} of {}", layer_idx + 1, image_ref))?;
+            let changes = apply_layer(
+                &compressed,
+                &managed_keys,
+                server_dir,
+                dry_run,
+                image_ref,
+                deny_override,
+                ignore_dangerous_override_attempts,
+            )
+            .await
+            .with_context(|| format!("applying layer {} of {}", layer_idx + 1, image_ref))?;
 
             all_changes.extend(changes);
         }
@@ -164,6 +174,9 @@ async fn apply_layer(
     managed_keys: &ManagedKeys,
     server_dir: &Path,
     dry_run: bool,
+    image_ref: &str,
+    deny_override: &[String],
+    ignore_dangerous_override_attempts: bool,
 ) -> Result<Vec<FileChange>> {
     use flate2::read::GzDecoder;
     use std::io::Read;
@@ -254,6 +267,30 @@ async fn apply_layer(
         }
 
         // --- Regular file ---
+
+        // Security: check whether this path is listed in server.deny-override.
+        if deny_override.iter().any(|p| p == &server_rel_str) {
+            eprintln!(
+                "\n!!! WARNING !!!\nBundle '{}' tried overriding '{}' which is listed in server.deny-override.\n\
+                 This should not be allowed. Contact bundle provider.",
+                image_ref, server_rel_str
+            );
+            if ignore_dangerous_override_attempts {
+                eprintln!(
+                    "[apply] skipping '{}' from '{}' due to --ignore-dangerous-override-attempts",
+                    server_rel_str, image_ref
+                );
+                continue;
+            } else {
+                anyhow::bail!(
+                    "bundle '{}' attempted to override protected file '{}' \
+                     (use --ignore-dangerous-override-attempts to skip instead of failing)",
+                    image_ref,
+                    server_rel_str
+                );
+            }
+        }
+
         let mut data: Vec<u8> = Vec::new();
         entry
             .read_to_end(&mut data)
@@ -594,6 +631,8 @@ mod tests {
             &cache,
             server_dir.path(),
             false,
+            &[],
+            false,
         )
         .await
         .unwrap();
@@ -637,6 +676,8 @@ mod tests {
             &[("ghcr.io/test/bundle:v1".to_string(), manifest)],
             &cache,
             server_dir.path(),
+            false,
+            &[],
             false,
         )
         .await
@@ -686,6 +727,8 @@ mod tests {
             &[("ghcr.io/test/bundle:v1".to_string(), manifest)],
             &cache,
             server_dir.path(),
+            false,
+            &[],
             false,
         )
         .await
@@ -739,6 +782,8 @@ mod tests {
             &cache,
             server_dir.path(),
             false,
+            &[],
+            false,
         )
         .await
         .unwrap();
@@ -768,6 +813,8 @@ mod tests {
             &cache,
             server_dir.path(),
             true, // dry_run = true
+            &[],
+            false,
         )
         .await
         .unwrap();
@@ -807,6 +854,8 @@ mod tests {
             &cache,
             server_dir.path(),
             true,
+            &[],
+            false,
         )
         .await
         .unwrap();
@@ -845,6 +894,8 @@ mod tests {
             ],
             &cache,
             server_dir.path(),
+            false,
+            &[],
             false,
         )
         .await
@@ -901,5 +952,116 @@ mod tests {
     fn change_kind_display() {
         assert_eq!(ChangeKind::Created.to_string(), "created");
         assert_eq!(ChangeKind::WouldMerge.to_string(), "would merge");
+    }
+
+    /// A bundle that tries to write `bundle.lock` is rejected by default.
+    #[tokio::test]
+    async fn deny_override_blocks_protected_path() {
+        let server_dir = TempDir::new().unwrap();
+        let (digest, compressed) = pack_files_layer(vec![("bundle.lock", b"malicious-content")]);
+
+        let (manifest, blobs) =
+            make_manifest_with_blobs(vec![(digest, compressed)], ManagedKeys::new());
+
+        let cache_dir = TempDir::new().unwrap();
+        let cache = LocalCache::open_at(cache_dir.path()).unwrap();
+        for data in blobs.values() {
+            cache.store_blob(data).unwrap();
+        }
+
+        let deny = vec!["bundle.lock".to_string()];
+        let result = apply_bundles(
+            &[("evil-bundle:v1".to_string(), manifest)],
+            &cache,
+            server_dir.path(),
+            false,
+            &deny,
+            false,
+        )
+        .await;
+
+        assert!(result.is_err());
+        let msg = format!("{:#}", result.unwrap_err());
+        assert!(
+            msg.contains("protected file"),
+            "error should mention protected file: {msg}"
+        );
+        assert!(
+            !server_dir.path().join("bundle.lock").exists(),
+            "bundle.lock must not have been written"
+        );
+    }
+
+    /// With --ignore-dangerous-override-attempts the file is skipped (not
+    /// written) and the operation succeeds.
+    #[tokio::test]
+    async fn deny_override_with_ignore_flag_skips_file_and_succeeds() {
+        let server_dir = TempDir::new().unwrap();
+        let (digest, compressed) = pack_files_layer(vec![
+            ("bundle.lock", b"should-be-skipped"),
+            ("plugins/safe.jar", b"safe-content"),
+        ]);
+
+        let (manifest, blobs) =
+            make_manifest_with_blobs(vec![(digest, compressed)], ManagedKeys::new());
+
+        let cache_dir = TempDir::new().unwrap();
+        let cache = LocalCache::open_at(cache_dir.path()).unwrap();
+        for data in blobs.values() {
+            cache.store_blob(data).unwrap();
+        }
+
+        let deny = vec!["bundle.lock".to_string()];
+        let changes = apply_bundles(
+            &[("bundle:v1".to_string(), manifest)],
+            &cache,
+            server_dir.path(),
+            false,
+            &deny,
+            true, // ignore_dangerous_override_attempts
+        )
+        .await
+        .unwrap();
+
+        // The denied file must NOT have been written.
+        assert!(
+            !server_dir.path().join("bundle.lock").exists(),
+            "bundle.lock must be skipped, not written"
+        );
+        // The safe file beside it must have been applied normally.
+        assert!(server_dir.path().join("plugins/safe.jar").exists());
+        // Only the safe file appears in the change list.
+        assert_eq!(changes.len(), 1);
+        assert_eq!(changes[0].path, "plugins/safe.jar");
+    }
+
+    /// Empty deny list never blocks anything.
+    #[tokio::test]
+    async fn empty_deny_override_allows_everything() {
+        let server_dir = TempDir::new().unwrap();
+        let (digest, compressed) =
+            pack_files_layer(vec![("bundle.lock", b"allowed-by-empty-deny-list")]);
+
+        let (manifest, blobs) =
+            make_manifest_with_blobs(vec![(digest, compressed)], ManagedKeys::new());
+
+        let cache_dir = TempDir::new().unwrap();
+        let cache = LocalCache::open_at(cache_dir.path()).unwrap();
+        for data in blobs.values() {
+            cache.store_blob(data).unwrap();
+        }
+
+        apply_bundles(
+            &[("bundle:v1".to_string(), manifest)],
+            &cache,
+            server_dir.path(),
+            false,
+            &[], // empty deny list
+            false,
+        )
+        .await
+        .unwrap();
+
+        assert!(server_dir.path().join("bundle.lock").exists());
     }
 }

@@ -9,6 +9,28 @@ use serde::{Deserialize, Serialize};
 pub struct ServerConfig {
     /// Command to exec when running the server (e.g. `["java", "-jar", "server.jar"]`).
     pub run: Vec<String>,
+
+    /// Server-root-relative paths that OCI images must never overwrite.
+    ///
+    /// Any bundle that contains one of these paths triggers either a hard
+    /// failure (default) or a skip-and-warn (with
+    /// `--ignore-dangerous-override-attempts`).
+    ///
+    /// The default list covers the bundle binary itself and the two project
+    /// files that `bundle` manages, plus the server jar.
+    #[serde(rename = "deny-override", default = "default_deny_override")]
+    pub deny_override: Vec<String>,
+}
+
+/// The default set of paths that bundles are not allowed to overwrite.
+fn default_deny_override() -> Vec<String> {
+    vec![
+        "bundle".into(),
+        "bundle.exe".into(),
+        "bundle.lock".into(),
+        "bundle.toml".into(),
+        "server.jar".into(),
+    ]
 }
 
 /// Top-level `bundle.toml` project manifest.
@@ -85,6 +107,7 @@ pub fn default_config() -> ProjectConfig {
                 "server.jar".into(),
                 "nogui".into(),
             ],
+            deny_override: default_deny_override(),
         },
         bundles: Vec::new(),
     }

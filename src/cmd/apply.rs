@@ -22,6 +22,11 @@ pub struct ApplyArgs {
     /// the local cache.  Useful for offline workflows or CI environments where
     /// a separate pull step has already been run.
     pub no_pull: bool,
+
+    /// If `true`, skip files that would override paths listed in
+    /// `server.deny-override` rather than failing hard.  The dangerous files
+    /// are never written; the operation just continues instead of aborting.
+    pub ignore_dangerous_override_attempts: bool,
 }
 
 /// Run `bundle apply` (or `bundle diff` when `args.dry_run` is `true`).
@@ -172,9 +177,16 @@ pub async fn run(args: ApplyArgs) -> Result<()> {
         server_dir.display()
     );
 
-    let changes = apply_bundles(&bundles_to_apply, &cache, &server_dir, args.dry_run)
-        .await
-        .context("applying bundle layers")?;
+    let changes = apply_bundles(
+        &bundles_to_apply,
+        &cache,
+        &server_dir,
+        args.dry_run,
+        &project.server.deny_override,
+        args.ignore_dangerous_override_attempts,
+    )
+    .await
+    .context("applying bundle layers")?;
 
     println!();
     if args.dry_run {

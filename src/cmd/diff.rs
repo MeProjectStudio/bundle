@@ -13,6 +13,7 @@ pub async fn run(no_pull: bool) -> Result<()> {
         dry_run: true,
         no_pull,
         server_dir: None,
+        ignore_dangerous_override_attempts: false,
     })
     .await
 }
