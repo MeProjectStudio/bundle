@@ -1,9 +1,8 @@
 [package]
 name = "bundle"
-version = "0.1.0"
 edition = "2021"
 description = "Minecraft server bundle manager via OCI containers"
-license = "MIT"
+license = "GPL-3.0"
 
 [[bin]]
 name = "bundle"
