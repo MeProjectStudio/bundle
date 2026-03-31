@@ -36,6 +36,12 @@ on:
         uses: actions/checkout@v6
         with:
           fetch-depth: 0
+      - name: Install Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+      - name: Install tools
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-edit
       - name: Build binary
         uses: houseabsolute/actions-rust-cross@v1
         with:
