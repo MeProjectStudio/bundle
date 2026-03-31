@@ -1,5 +1,10 @@
 name: Lint and static checks
 
+on:
+  push:
+    branches:
+      - master
+
 jobs:
   static-analysis:
     name: Static analysis
@@ -36,4 +41,3 @@ jobs:
         with:
           sarif_file: clippy-results.sarif
           category: clippy
-
