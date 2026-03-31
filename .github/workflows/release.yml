@@ -67,4 +67,8 @@ jobs:
           executable-name: bundle
           target: ${{ matrix.platform.target }}
           changes-file: CHANGELOG.md
-          action-gh-release-parameters: ${{ contains(github.ref_name, 'rc') && '{"prerelease":true}' || '{}' }}
+          archive-name: bundle-${{ matrix.platform.target }}
+          action-gh-release-parameters: |
+            {
+              "prerelease": ${{ contains(github.ref_name, 'rc') }}
+            }
