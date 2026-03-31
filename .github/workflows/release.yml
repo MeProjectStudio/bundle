@@ -1,41 +1,10 @@
-name: Lint and static checks
+name: Release
 
-jobs:
-  static-analysis:
-    name: Static analysis
+on:
+  push:
+    tags:
+      - "v*"
 
-    runs-on: ubuntu-latest
-
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-      - name: Install Rust toolchain
-        uses: actions-rust-lang/setup-rust-toolchain@v1
-        with:
-          components: rustfmt,clippy
-          rustflags: ""
-      - name: Install tools
-        uses: taiki-e/install-action@v2
-        with:
-          tool: clippy-sarif,sarif-fmt,cargo-deny
-      - name: Run clippy
-        run: >
-          cargo clippy --no-deps --all-targets --message-format=json -- -D warnings |
-          clippy-sarif |
-          tee clippy-results.sarif |
-          sarif-fmt
-      - name: Run cargo-deny
-        run: cargo deny check
-      - name: Run fmt
-        run: cargo fmt --all --check
-      - name: Upload clippy results
-        uses: github/codeql-action/upload-sarif@v3
-        continue-on-error: true
-        with:
-          sarif_file: clippy-results.sarif
-          category: clippy
   release:
     name: Release - ${{ matrix.platform.os-name }}
     strategy:
@@ -65,6 +34,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
       - name: Build binary
         uses: houseabsolute/actions-rust-cross@v1
         with:
@@ -72,9 +43,17 @@ jobs:
           target: ${{ matrix.platform.target }}
           args: "--release"
           strip: true
-
+      - name: Generate a changelog
+        uses: orhun/git-cliff-action@v4
+        id: git-cliff
+        with:
+          config: cliff.toml
+          args: --verbose
+        env:
+          OUTPUT: CHANGELOG.md
       - name: Publish artifacts and release
         uses: houseabsolute/actions-rust-release@v0
         with:
           executable-name: bundle
           target: ${{ matrix.platform.target }}
+          changes-file: CHANGELOG.md
