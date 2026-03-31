@@ -1,8 +1,6 @@
-
 use anyhow::Result;
 
 use crate::cmd::apply::{run as apply_run, ApplyArgs};
-
 
 /// Run `bundle diff`.
 ///

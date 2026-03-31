@@ -1,4 +1,3 @@
-
 use git_version::git_version;
 
 /// The git revision embedded at compile time via `git describe`.

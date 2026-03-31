@@ -29,7 +29,6 @@ use flate2::{read::GzDecoder, write::GzEncoder, Compression};
 use sha2::{Digest as ShaDigest, Sha256};
 use tar::{Archive, Builder, EntryType, Header};
 
-
 /// A single file or symlink to be packed into an OCI layer tar archive.
 #[derive(Debug, Clone)]
 pub struct LayerEntry {
@@ -76,7 +75,6 @@ impl LayerEntry {
     }
 }
 
-
 /// The result of [`pack_layer`]: a gzip-compressed tar blob with its OCI
 /// content-addressable metadata.
 #[derive(Debug, Clone)]
@@ -99,7 +97,6 @@ pub struct PackedLayer {
     /// Compressed byte size — the `size` stored in the manifest descriptor.
     pub size: u64,
 }
-
 
 /// Pack a slice of [`LayerEntry`] values into a single gzip-compressed OCI
 /// layer, computing both the `diff_id` and the `digest` in one pass.
@@ -267,7 +264,6 @@ fn gzip_compress(data: &[u8]) -> Result<Vec<u8>> {
         .context("writing data to gzip encoder")?;
     encoder.finish().context("finalising gzip compression")
 }
-
 
 /// The result of unpacking a layer — records which paths were written.
 #[allow(dead_code)]
@@ -519,7 +515,6 @@ pub fn unpack_layer(compressed: &[u8], dest_dir: &Path) -> Result<UnpackResult> 
     Ok(result)
 }
 
-
 /// Like [`unpack_layer`], but does **not** write anything to disk.
 ///
 /// Returns what *would* change if the layer were applied to `dest_dir`.
@@ -599,7 +594,6 @@ pub fn unpack_layer_dry_run(compressed: &[u8], dest_dir: &Path) -> Result<Unpack
     Ok(result)
 }
 
-
 /// Recursively collect all files under `src_dir` as [`LayerEntry`] values,
 /// prefixing each path with `dest_prefix`.
 ///
@@ -671,7 +665,6 @@ pub fn collect_directory_entries(src_dir: &Path, dest_prefix: &str) -> Result<Ve
     Ok(entries)
 }
 
-
 /// Strip a leading `/` from `path` to make it relative.
 #[allow(dead_code)]
 fn strip_leading_slash(path: &Path) -> PathBuf {
@@ -715,12 +708,10 @@ fn write_file(path: &Path, data: &[u8], _mode: u32) -> Result<()> {
     Ok(())
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use tempfile::TempDir;
-
 
     #[test]
     fn pack_empty_layer() {
@@ -821,7 +812,6 @@ mod tests {
         );
     }
 
-
     #[test]
     fn diff_id_is_sha256_of_uncompressed() {
         let entries = vec![LayerEntry::file("test.txt", b"hello".to_vec())];
@@ -861,7 +851,6 @@ mod tests {
         assert_eq!(packed1.diff_id, packed2.diff_id);
     }
 
-
     #[test]
     fn whiteout_entry_deletes_file() {
         // First, create a base layer with a file.
@@ -877,7 +866,6 @@ mod tests {
         assert!(!dir.path().join("plugins/A/old.yml").exists());
         assert_eq!(result.deleted, vec!["plugins/A/old.yml"]);
     }
-
 
     #[test]
     fn dry_run_does_not_write_files() {
@@ -915,7 +903,6 @@ mod tests {
         );
     }
 
-
     #[test]
     fn normalise_adds_trailing_slash() {
         assert_eq!(normalise_dir_path("plugins/A"), "plugins/A/");
@@ -930,7 +917,6 @@ mod tests {
     fn normalise_keeps_trailing_slash() {
         assert_eq!(normalise_dir_path("plugins/A/"), "plugins/A/");
     }
-
 
     #[test]
     fn strip_leading_slash_with_slash() {

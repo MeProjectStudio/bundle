@@ -18,7 +18,6 @@ use tokio::io::AsyncWrite;
 
 use crate::registry::types::{Descriptor, LocalCache, LocalImage};
 
-
 /// Wraps an `oci_client::Client` with mcpm-specific auth resolution and
 /// convenience methods for the operations mcpm needs.
 #[derive(Clone)]
@@ -50,7 +49,6 @@ impl McpmRegistryClient {
             inner: Client::new(cfg),
         }
     }
-
 
     /// Resolve credentials for `image_ref`.
     ///
@@ -87,7 +85,6 @@ impl McpmRegistryClient {
 
         RegistryAuth::Anonymous
     }
-
 
     /// Fetch the manifest for `image_ref` and return `(manifest, digest)`.
     ///
@@ -317,7 +314,6 @@ impl Default for McpmRegistryClient {
     }
 }
 
-
 /// Download a single blob (described by an `oci-spec` [`Descriptor`]) into an
 /// in-memory `Vec<u8>`.  Used by `fetch_layers_to_cache` and
 /// `fetch_config_to_cache`.
@@ -335,7 +331,6 @@ async fn pull_blob_to_vec(
         .context("flushing blob download buffer")?;
     Ok(writer.into_inner())
 }
-
 
 /// A minimal `AsyncWrite` that accumulates bytes into a `Vec<u8>`.
 struct AsyncVecWriter {
@@ -376,8 +371,6 @@ impl tokio::io::AsyncWrite for AsyncVecWriter {
         std::task::Poll::Ready(Ok(()))
     }
 }
-
-
 
 /// Return `true` if `image_ref` contains an explicit registry hostname.
 ///
@@ -472,7 +465,6 @@ pub fn registry_host_of(image_ref: &str) -> String {
     "index.docker.io".to_string()
 }
 
-
 /// Try to build `RegistryAuth::Basic` from `{PREFIX}_USERNAME` and
 /// `{PREFIX}_PASSWORD` environment variables.
 fn env_auth(prefix: &str) -> Option<RegistryAuth> {
@@ -483,7 +475,6 @@ fn env_auth(prefix: &str) -> Option<RegistryAuth> {
     }
     Some(RegistryAuth::Basic(username, password))
 }
-
 
 /// Shared structure for both `containers/auth.json` and `~/.docker/config.json`.
 #[derive(Debug, serde::Serialize, Deserialize, Default)]
@@ -592,7 +583,6 @@ fn docker_config_path() -> Option<PathBuf> {
     dirs::home_dir().map(|h| h.join(".docker/config.json"))
 }
 
-
 /// Return a human-readable short form of a digest (`"sha256:abcdef12"`).
 fn short_digest(digest: &str) -> String {
     let hex = digest.strip_prefix("sha256:").unwrap_or(digest);
@@ -600,11 +590,9 @@ fn short_digest(digest: &str) -> String {
     format!("sha256:{}", short)
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
 
     #[test]
     fn bare_name_has_no_registry() {
@@ -666,7 +654,6 @@ mod tests {
         assert!(msg.contains("myplugin"), "got: {}", msg);
     }
 
-
     #[test]
     fn auth_from_file_most_specific_wins() {
         use std::io::Write;
@@ -698,7 +685,6 @@ mod tests {
             _ => panic!("expected Basic auth"),
         }
     }
-
 
     #[test]
     fn registry_host_ghcr() {

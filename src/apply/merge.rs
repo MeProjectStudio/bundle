@@ -34,7 +34,6 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 
-
 /// Merge `on_disk` and `from_bundle` bytes, returning the merged bytes.
 ///
 /// `managed_keys` is a list of dot-separated key paths (or literal property
@@ -61,7 +60,6 @@ pub fn merge_config(
     }
 }
 
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConfigFormat {
     Yaml,
@@ -80,7 +78,6 @@ pub fn detect_format(path: &Path) -> Option<ConfigFormat> {
         _ => None,
     }
 }
-
 
 fn merge_yaml(on_disk: &[u8], from_bundle: &[u8], managed_keys: &[String]) -> Result<Vec<u8>> {
     let disk_str = std::str::from_utf8(on_disk).context("on-disk YAML is not valid UTF-8")?;
@@ -144,7 +141,6 @@ fn set_yaml_nested(val: &mut serde_yaml::Value, path: &[&str], new_val: serde_ya
     }
 }
 
-
 fn merge_toml(on_disk: &[u8], from_bundle: &[u8], managed_keys: &[String]) -> Result<Vec<u8>> {
     let disk_str = std::str::from_utf8(on_disk).context("on-disk TOML is not valid UTF-8")?;
     let bundle_str = std::str::from_utf8(from_bundle).context("bundle TOML is not valid UTF-8")?;
@@ -196,7 +192,6 @@ fn set_toml_nested(val: &mut toml::Value, path: &[&str], new_val: toml::Value) {
         }
     }
 }
-
 
 fn merge_json(on_disk: &[u8], from_bundle: &[u8], managed_keys: &[String]) -> Result<Vec<u8>> {
     let disk_str = std::str::from_utf8(on_disk).context("on-disk JSON is not valid UTF-8")?;
@@ -250,7 +245,6 @@ fn set_json_nested(val: &mut serde_json::Value, path: &[&str], new_val: serde_js
         }
     }
 }
-
 
 /// Java `.properties` merge.
 ///
@@ -321,7 +315,6 @@ fn merge_properties(
 
     Ok(output.into_bytes())
 }
-
 
 #[derive(Debug)]
 enum PropertyLine {
@@ -435,13 +428,11 @@ fn parse_property_kv(line: &str) -> Option<(String, String)> {
         return None;
     }
 
-    let after_key =
-        line[key_end..].trim_start_matches(['=', ':', ' ', '\t']);
+    let after_key = line[key_end..].trim_start_matches(['=', ':', ' ', '\t']);
     let value = after_key.to_string();
 
     Some((unescape_property(raw_key), unescape_property(&value)))
 }
-
 
 fn parse_properties(content: &str) -> Result<HashMap<String, String>> {
     let mut map = HashMap::new();
@@ -456,7 +447,6 @@ fn parse_properties(content: &str) -> Result<HashMap<String, String>> {
     }
     Ok(map)
 }
-
 
 /// Unescape a `.properties` key or value string.
 ///
@@ -543,11 +533,9 @@ fn escape_property_value(s: &str) -> String {
     result
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
 
     #[test]
     fn format_yml() {
@@ -598,7 +586,6 @@ mod tests {
     fn format_so_is_none() {
         assert_eq!(detect_format(Path::new("native.so")), None);
     }
-
 
     #[test]
     fn yaml_managed_key_taken_from_bundle() {
@@ -692,7 +679,6 @@ mod tests {
         );
     }
 
-
     #[test]
     fn toml_managed_key_from_bundle() {
         let disk = b"[database]\nurl = \"disk-url\"\nport = 3306\n";
@@ -732,7 +718,6 @@ mod tests {
         );
     }
 
-
     #[test]
     fn json_managed_key_from_bundle() {
         let disk = br#"{"config":{"timeout":30,"retries":3}}"#;
@@ -752,7 +737,6 @@ mod tests {
         let merged = merge_config(b"data", b"data", &[], Path::new("file.jar")).unwrap();
         assert!(merged.is_none());
     }
-
 
     #[test]
     fn properties_managed_key_from_bundle() {
@@ -831,7 +815,6 @@ mod tests {
         );
     }
 
-
     #[test]
     fn unescape_newline() {
         assert_eq!(unescape_property("line1\\nline2"), "line1\nline2");
@@ -851,7 +834,6 @@ mod tests {
     fn unescape_noop_plain() {
         assert_eq!(unescape_property("hello world"), "hello world");
     }
-
 
     #[test]
     fn parse_kv_equals_sep() {

@@ -47,7 +47,6 @@
 use anyhow::{bail, Context, Result};
 use semver::{Version, VersionReq};
 
-
 /// Inspect the tag portion of `image_ref` and decide whether it is a semver
 /// range expression that requires tag listing + resolution.
 ///
@@ -146,7 +145,6 @@ pub fn rewrite_tag(image_ref: &str, resolved_tag: &str) -> String {
     // No colon after the first slash → append the tag.
     format!("{}:{}", image_ref, resolved_tag)
 }
-
 
 /// Extract the tag portion of an image reference string.
 ///
@@ -285,11 +283,9 @@ fn req_mentions_prerelease(req: &VersionReq) -> bool {
     false
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
 
     #[test]
     fn exact_three_component_is_not_a_range() {
@@ -347,7 +343,6 @@ mod tests {
     fn no_tag_returns_false() {
         assert!(!is_range("ghcr.io/author/img"));
     }
-
 
     #[test]
     fn partial_one_component_expands_to_major_range() {
@@ -421,7 +416,6 @@ mod tests {
         assert!(req.matches(&Version::parse("1.0.0").unwrap()));
         assert!(req.matches(&Version::parse("99.0.0").unwrap()));
     }
-
 
     fn tags(v: &[&str]) -> Vec<String> {
         v.iter().map(|s| s.to_string()).collect()
@@ -516,7 +510,6 @@ mod tests {
         assert_eq!(got, "2.0.0");
     }
 
-
     #[test]
     fn rewrite_tag_replaces_existing_tag() {
         assert_eq!(
@@ -549,7 +542,6 @@ mod tests {
             "ghcr.io/author/img:v2.9.0"
         );
     }
-
 
     #[test]
     fn tag_of_standard_ref() {
