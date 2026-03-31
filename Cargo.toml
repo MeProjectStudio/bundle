@@ -43,7 +43,7 @@ rpassword = "7"
 futures-util = "0.3"
 semver = "1"
 git-version = "0.3"
-self_update = { version = "0.43.1", features = ["rustls"] }
+self_update = { version = "0.43.1", features = ["rustls", "archive-tar", "ureq"], default-features = false }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
