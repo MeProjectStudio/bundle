@@ -12,9 +12,10 @@ Crate name: **`bundle`** (`src/main.rs`)
 ## Repository Layout
 
 ```
+build.rs            – Build script; forwards Cargo's TARGET into BUNDLE_TARGET for use via env!()
 src/
   main.rs           – CLI definition (clap), top-level dispatch, and unit tests for arg parsing
-  cmd/              – One file per subcommand; each exposes a single async entry-point function
+  cmd/              – One file per subcommand; each exposes a single public entry-point function
     apply.rs        – `bundle server apply`
     build.rs        – `bundle build`
     diff.rs         – `bundle server diff`
@@ -23,6 +24,7 @@ src/
     pull.rs         – `bundle server pull`
     push.rs         – `bundle push`
     run.rs          – `bundle server run`
+    selfupdate.rs   – `bundle selfupdate`
     version.rs      – `bundle version`
   bundlefile/       – Parsing and types for the Bundlefile DSL
     parser.rs       – Tokenises and parses a Bundlefile into a `Bundlefile` struct
@@ -133,6 +135,11 @@ cargo deny check
 - Unit tests live in `mod tests` at the bottom of the file they test. Use descriptive snake\_case test names that read like sentences (e.g. `add_checksum_on_local_path_is_error`).
 - Avoid `unwrap()` / `expect()` in non-test code; propagate errors.
 - New commands go in `src/cmd/<name>.rs`, exported from `src/cmd/mod.rs`, and wired up in `src/main.rs`.
+- Commands that only need blocking I/O (e.g. `version`, `init`, `selfupdate`) expose a plain synchronous `pub fn run(…) -> Result<()>`. Commands that perform async I/O expose `pub async fn run(…) -> Result<()>`. Both are called directly from `src/main.rs`'s top-level `async fn run()`.
+
+### Compile-time target triple
+
+`build.rs` reads Cargo's `TARGET` environment variable (only available in build scripts) and re-exports it as `BUNDLE_TARGET`, making the current compilation target accessible anywhere in the crate via `env!("BUNDLE_TARGET")`. This is used in `cmd/version.rs` and is available to any future code that needs to know the target triple at compile time.
 
 ---
 
@@ -145,17 +152,19 @@ cargo deny check
 
 ## Adding a New CLI Subcommand
 
-1. Create `src/cmd/<name>.rs` with a public `async fn run(…) -> anyhow::Result<()>`.
+1. Create `src/cmd/<name>.rs` with a public entry point:
+   - `pub fn run(…) -> anyhow::Result<()>` for commands that only need blocking I/O.
+   - `pub async fn run(…) -> anyhow::Result<()>` for commands that perform async I/O.
 2. Export it in `src/cmd/mod.rs`.
-3. Add the variant to the relevant `enum` in `src/main.rs` (using clap `#[derive(Subcommand)]`).
-4. Dispatch it in `run()` in `src/main.rs`.
+3. Add the variant to the relevant `enum` in `src/main.rs` (using clap `#[derive(Subcommand)]`). Use `#[command(name = "…")]` whenever the desired subcommand name differs from what clap would derive from the variant name (e.g. `SelfUpdate` → `selfupdate`).
+4. Dispatch it in `run()` in `src/main.rs`, calling `.await` only for async entry points.
 5. Add CLI-parse tests in `main.rs`'s `mod tests`.
 
 ---
 
-## CI Pipeline (`.github/workflows/cicd.yml`)
+## CI Pipeline
 
-Two jobs run on every push/PR:
+Two workflow files live in `.github/workflows/`:
 
-1. **Static analysis** – `cargo clippy`, `cargo deny check`, `cargo fmt --check`. Clippy results are uploaded as a SARIF report to GitHub Code Scanning.
-2. **Release** – cross-compiles with `actions-rust-cross` for all five targets and publishes binaries via `actions-rust-release`.
+1. **`check.yml`** – runs on every push and PR: `cargo clippy`, `cargo deny check`, `cargo fmt --check`. Clippy results are uploaded as a SARIF report to GitHub Code Scanning.
+2. **`release.yml`** – triggers on `v*` tags: cross-compiles with `actions-rust-cross` for all five targets, sets the crate version from the tag with `cargo set-version`, generates a changelog with `git-cliff`, and publishes binaries via `actions-rust-release`. Archives are named `bundle-<target>.tar.gz` (`.zip` on Windows) and contain the `bundle` binary at the archive root.
