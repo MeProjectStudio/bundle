@@ -111,6 +111,14 @@ enum Commands {
     /// Manage OCI bundles on a Minecraft server (pull, apply, run).
     #[command(subcommand)]
     Server(ServerCommands),
+
+    /// Update the bundle binary to the latest release from GitHub.
+    #[command(name = "selfupdate")]
+    SelfUpdate {
+        /// Skip the confirmation prompt before replacing the binary.
+        #[arg(long)]
+        not_interactive: bool,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -187,6 +195,10 @@ async fn run() -> Result<()> {
     match cli.command {
         Commands::Version => {
             cmd::version::run();
+        }
+
+        Commands::SelfUpdate { not_interactive } => {
+            cmd::selfupdate::run(not_interactive).context("bundle selfupdate failed")?;
         }
 
         Commands::Login {
@@ -379,6 +391,34 @@ mod tests {
         let cli = Cli::try_parse_from(["bundle", "init"]);
         assert!(cli.is_ok(), "bundle init should parse: {:?}", cli);
         assert!(matches!(cli.unwrap().command, Commands::Init));
+    }
+
+    #[test]
+    fn cli_selfupdate_parses() {
+        let cli = Cli::try_parse_from(["bundle", "selfupdate"]);
+        assert!(cli.is_ok(), "bundle selfupdate should parse: {:?}", cli);
+        assert!(matches!(
+            cli.unwrap().command,
+            Commands::SelfUpdate {
+                not_interactive: false
+            }
+        ));
+    }
+
+    #[test]
+    fn cli_selfupdate_not_interactive_parses() {
+        let cli = Cli::try_parse_from(["bundle", "selfupdate", "--not-interactive"]);
+        assert!(
+            cli.is_ok(),
+            "bundle selfupdate --not-interactive should parse: {:?}",
+            cli
+        );
+        assert!(matches!(
+            cli.unwrap().command,
+            Commands::SelfUpdate {
+                not_interactive: true
+            }
+        ));
     }
 
     #[test]

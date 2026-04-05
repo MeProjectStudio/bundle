@@ -55,6 +55,8 @@ bundles = [
 
 [server]
 run = ["java", "-Xmx4G", "-jar", "server.jar", "nogui"]
+
+# These files are not allowed to be overridden by the apply at `bundle server apply`
 deny-override = ["bundle", "bundle.exe", "bundle.lock", "bundle.toml", "server.jar"]
 "#;
 

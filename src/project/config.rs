@@ -95,24 +95,6 @@ impl ProjectConfig {
     }
 }
 
-/// Produce a minimal starter `bundle.toml` for `bundle init`.
-#[allow(dead_code)]
-pub fn default_config() -> ProjectConfig {
-    ProjectConfig {
-        server: ServerConfig {
-            run: vec![
-                "java".into(),
-                "-Xmx4G".into(),
-                "-jar".into(),
-                "server.jar".into(),
-                "nogui".into(),
-            ],
-            deny_override: default_deny_override(),
-        },
-        bundles: Vec::new(),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

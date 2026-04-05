@@ -6,4 +6,5 @@ pub mod login;
 pub mod pull;
 pub mod push;
 pub mod run;
+pub mod selfupdate;
 pub mod version;
