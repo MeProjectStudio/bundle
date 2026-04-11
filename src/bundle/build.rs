@@ -1142,6 +1142,46 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn build_copy_glob_from_context_deep_prefix_stripped() {
+        // Regression test: COPY build/libs/*.jar plugins/
+        // The non-wildcard prefix "build/libs/" must be stripped so the jar
+        // lands at plugins/<name>.jar, NOT plugins/build/libs/<name>.jar.
+        let dir = TempDir::new().unwrap();
+        write_temp_file(
+            dir.path(),
+            "build/libs/mcmetrics-exporter-velocity-0.5.0-rc2.jar",
+            b"fake-jar",
+        );
+
+        let bundlefile_content =
+            "FROM scratch\nCOPY build/libs/mcmetrics-exporter-velocity-*.jar plugins/\n";
+        let bundlefile_path = dir.path().join("Bundlefile");
+        std::fs::write(&bundlefile_path, bundlefile_content).unwrap();
+
+        let image = build(&bundlefile_path, &HashMap::new()).await.unwrap();
+        let layer_data = image
+            .get_blob(image.manifest.layers()[0].digest().as_ref())
+            .unwrap();
+        let unpack_dir = TempDir::new().unwrap();
+        crate::bundle::layer::unpack_layer(layer_data, unpack_dir.path()).unwrap();
+
+        assert!(
+            unpack_dir
+                .path()
+                .join("plugins/mcmetrics-exporter-velocity-0.5.0-rc2.jar")
+                .exists(),
+            "jar must land flat in plugins/ after prefix strip"
+        );
+        assert!(
+            !unpack_dir
+                .path()
+                .join("plugins/build/libs/mcmetrics-exporter-velocity-0.5.0-rc2.jar")
+                .exists(),
+            "build/libs/ prefix must not be reproduced under plugins/"
+        );
+    }
+
+    #[tokio::test]
     async fn build_copy_glob_from_context_recursive() {
         // COPY plugins/**/*.jar output/  — matches files in subdirectories too,
         // preserving the relative directory structure under the glob base.

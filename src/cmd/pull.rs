@@ -6,7 +6,7 @@ use tokio::io::AsyncWriteExt;
 
 use crate::project::config::ProjectConfig;
 use crate::project::lock::LockFile;
-use crate::registry::client::McpmRegistryClient;
+use crate::registry::client::{has_explicit_registry, McpmRegistryClient};
 use crate::registry::semver as sv;
 use crate::registry::types::{Descriptor, LocalCache};
 
@@ -56,6 +56,35 @@ pub async fn run() -> Result<()> {
     bundles.sort();
 
     for image_ref in &bundles {
+        // ── Local tags: bare names with no registry hostname ──────────────
+        if !has_explicit_registry(image_ref) {
+            mp.println(format!("\nChecking local  {image_ref}"))?;
+            if cache.has_manifest(image_ref) {
+                let (_, digest) = cache
+                    .load_manifest(image_ref)
+                    .with_context(|| format!("loading local manifest for '{}'", image_ref))?;
+                mp.println(format!("  Digest: {digest}"))?;
+                mp.println(String::from("  Status: Up to date (local)"))?;
+                new_lock.set_digest(image_ref.clone(), digest);
+            } else {
+                mp.println(format!(
+                    "  ✗ not found in local cache\n\
+                     \n\
+                     hint: run `bundle build -t {image_ref}` to build it locally"
+                ))?;
+                // Keep the previous lock entry if there is one.
+                let existing_lock = LockFile::load().unwrap_or_default();
+                if let Some(existing_digest) = existing_lock.get_digest(image_ref) {
+                    mp.println(format!(
+                        "  ! keeping previous digest: {}",
+                        short(existing_digest)
+                    ))?;
+                    new_lock.set_digest(image_ref.clone(), existing_digest.to_string());
+                }
+            }
+            continue;
+        }
+        // ── Registry refs: existing pull logic ────────────────────────────
         mp.println(format!("\nPulling {image_ref}"))?;
 
         let resolved_ref = if sv::is_range(image_ref) {

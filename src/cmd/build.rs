@@ -4,8 +4,9 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 
 use crate::bundle::build::build;
-use crate::registry::client::{parse_ref, require_explicit_registry, McpmRegistryClient};
+use crate::registry::client::{has_explicit_registry, parse_ref, McpmRegistryClient};
 use crate::registry::types::LocalCache;
+use crate::util::digest::sha256_digest;
 
 macro_rules! log {
     ($($t:tt)*) => { crate::progress!("build", $($t)*) };
@@ -40,11 +41,15 @@ pub async fn run(args: BuildArgs) -> Result<()> {
 
     log!("Bundlefile: {}", bundlefile_path.display());
 
-    // Validate all tags before spending time building.
+    // Validate tags before spending time building.
+    // Bare names (no registry hostname) are local-only — validate format only.
+    // Registry refs are validated fully and will be pushed after the build.
     for tag in &args.tags {
-        require_explicit_registry(tag)
-            .with_context(|| format!("invalid tag '{}' for -t/--tag", tag))?;
-        parse_ref(tag).with_context(|| format!("invalid tag: '{}'", tag))?;
+        if has_explicit_registry(tag) {
+            parse_ref(tag).with_context(|| format!("invalid tag: '{}'", tag))?;
+        } else if tag.is_empty() {
+            anyhow::bail!("tag must not be empty");
+        }
     }
 
     let mut overrides: HashMap<String, String> = HashMap::new();
@@ -68,6 +73,28 @@ pub async fn run(args: BuildArgs) -> Result<()> {
         .store_built_image(&image)
         .context("storing built image in local cache")?;
 
+    // ── Local tags ────────────────────────────────────────────────────────────
+    // Store the manifest under each bare tag name so `bundle server pull` can
+    // find it without a registry round-trip.
+    let local_tags: Vec<&String> = args
+        .tags
+        .iter()
+        .filter(|t| !has_explicit_registry(t))
+        .collect();
+    if !local_tags.is_empty() {
+        let manifest_bytes = image
+            .manifest
+            .to_string()
+            .context("serialising manifest for local tag")?
+            .into_bytes();
+        let manifest_digest = sha256_digest(&manifest_bytes);
+        for tag in &local_tags {
+            cache
+                .store_manifest(tag, &manifest_bytes, &manifest_digest)
+                .with_context(|| format!("storing local tag '{}'", tag))?;
+        }
+    }
+
     let total_size: u64 = image.new_blobs.values().map(|b| b.len() as u64).sum();
 
     println!();
@@ -90,17 +117,33 @@ pub async fn run(args: BuildArgs) -> Result<()> {
         }
     }
 
-    if args.tags.is_empty() {
+    // ── Summary ───────────────────────────────────────────────────────────────
+    let remote_tags: Vec<&String> = args
+        .tags
+        .iter()
+        .filter(|t| has_explicit_registry(t))
+        .collect();
+
+    if !local_tags.is_empty() {
         println!();
-        println!("Run `bundle push <IMAGE:TAG>` to publish.");
-    } else {
+        for tag in &local_tags {
+            println!("  ✓ tagged locally: {}", tag);
+        }
+        println!("  Use `bundle server pull` to lock the digest in bundle.lock.");
+    }
+
+    if remote_tags.is_empty() && local_tags.is_empty() {
         println!();
-        println!("Pushing to {} tag(s)…", args.tags.len());
+        println!("Run `bundle push <IMAGE:TAG>` to publish to a registry.");
+        println!("Run `bundle build -t <NAME>` to tag locally for `bundle server pull`.");
+    } else if !remote_tags.is_empty() {
+        println!();
+        println!("Pushing to {} registry tag(s)…", remote_tags.len());
 
         let client = McpmRegistryClient::new();
         let mut push_errors: Vec<(String, anyhow::Error)> = Vec::new();
 
-        for tag in &args.tags {
+        for tag in &remote_tags {
             eprint!("  {} … ", tag);
             match client.push_image(tag, &image).await {
                 Ok(url) => {
@@ -109,7 +152,7 @@ pub async fn run(args: BuildArgs) -> Result<()> {
                 }
                 Err(e) => {
                     println!("✗");
-                    push_errors.push((tag.clone(), e));
+                    push_errors.push((tag.to_string(), e));
                 }
             }
         }
@@ -120,14 +163,14 @@ pub async fn run(args: BuildArgs) -> Result<()> {
                 eprintln!("error pushing to '{}': {:#}", tag, err);
             }
             anyhow::bail!(
-                "{} of {} tag(s) failed to push",
+                "{} of {} registry tag(s) failed to push",
                 push_errors.len(),
-                args.tags.len()
+                remote_tags.len()
             );
         }
 
         println!();
-        println!("✓ Pushed to {} tag(s).", args.tags.len());
+        println!("✓ Pushed to {} registry tag(s).", remote_tags.len());
         println!("  Use `bundle push <IMAGE:TAG>` to push to additional tags.");
     }
 
