@@ -1,0 +1,72 @@
+name: Feature request
+description: Suggest a new feature or improvement for bundle.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to suggest an improvement! Please fill in as much detail as you can to help us understand the proposal.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or motivation
+      description: What problem does this feature solve? Is it related to a limitation or friction point you've run into?
+      placeholder: "e.g. There's no way to pin a plugin to a specific semver range in the Bundlefile — I can only use exact tags or `latest`."
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed solution
+      description: Describe the behaviour or interface you'd like to see. If it involves a new Bundlefile directive, CLI flag, or subcommand, show a concrete example of what it would look like.
+      placeholder: |
+        Add a `~>` constraint operator to FROM, e.g.:
+
+          FROM ghcr.io/me/my-plugins:~>1.2 AS base
+
+        bundle server pull would then resolve the highest 1.x.y tag.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: What other approaches or workarounds have you tried or thought about? Why do you prefer your proposed solution?
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      description: Which part of bundle does this feature primarily affect?
+      options:
+        - Bundlefile DSL (new directive / syntax)
+        - bundle build
+        - bundle push / pull
+        - bundle login
+        - bundle server apply / diff
+        - bundle server run
+        - bundle server init
+        - bundle selfupdate / version
+        - OCI registry compatibility
+        - Cross-platform / packaging
+        - Documentation
+        - CI / release pipeline
+        - Other
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: contribution
+    attributes:
+      label: Contribution
+      options:
+        - label: I'd be willing to open a pull request implementing this feature.
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional context
+      description: Any other context, prior art from other tools, links to relevant specs (e.g. OCI image spec), or screenshots that might help.

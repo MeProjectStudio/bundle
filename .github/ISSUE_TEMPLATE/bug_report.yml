@@ -1,0 +1,93 @@
+name: Bug report
+description: Something isn't working as expected.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a bug! Please fill in as much detail as you can — the more context you provide, the faster it can be investigated.
+
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: A clear and concise description of the bug.
+      placeholder: "e.g. `bundle server apply` silently skips all ADD directives when the source URL returns a redirect."
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: The minimal sequence of commands or actions that reliably triggers the bug.
+      placeholder: |
+        1. Create a Bundlefile with `ADD https://…`
+        2. Run `bundle build`
+        3. Run `bundle server apply`
+        4. See that the file is missing from the server directory
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behaviour
+      description: What did you expect to happen instead?
+    validations:
+      required: true
+
+  - type: textarea
+    id: bundlefile
+    attributes:
+      label: Bundlefile (or relevant excerpt)
+      description: If the bug involves building or parsing a Bundlefile, paste the relevant portion here.
+      render: dockerfile
+      placeholder: |
+        FROM scratch
+        ADD --checksum=sha256:abc123 https://example.com/plugin.jar plugins/plugin.jar
+
+  - type: textarea
+    id: error_output
+    attributes:
+      label: Full error output
+      description: Paste the complete terminal output, including any error or warning lines. Run with `RUST_BACKTRACE=1` if a panic is involved.
+      render: shell
+    validations:
+      required: true
+
+  - type: input
+    id: bundle_version
+    attributes:
+      label: bundle version
+      description: Output of `bundle version` (or `bundle --version`).
+      placeholder: "bundle 0.3.1 (x86_64-unknown-linux-musl)"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - Linux (x86_64)
+        - Linux (aarch64)
+        - macOS (Apple Silicon)
+        - macOS (Intel)
+        - Windows (x86_64)
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: registry
+    attributes:
+      label: OCI registry (if applicable)
+      description: Which registry were you pushing to / pulling from when the bug occurred?
+      placeholder: "e.g. ghcr.io, docker.io, self-hosted"
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional context
+      description: Anything else that might be relevant — e.g. `bundle.toml`, `bundle.lock`, server directory layout, network environment.
