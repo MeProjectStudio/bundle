@@ -357,6 +357,61 @@ impl LocalCache {
         })
     }
 
+    /// Reconstruct a [`LocalImage`] from a locally-tagged manifest.
+    ///
+    /// Use this when pushing an image that was tagged with
+    /// `bundle build -t <name>` rather than the single `built/` slot used
+    /// by [`load_built_image`].
+    ///
+    /// All layer blobs are placed in `new_blobs` so that
+    /// [`McpmRegistryClient::push_image`] uploads them to the destination
+    /// registry.
+    pub fn load_local_image_by_tag(&self, tag: &str) -> Result<LocalImage> {
+        if !self.has_manifest(tag) {
+            anyhow::bail!(
+                "local tag '{}' not found in cache.\n\
+                 Run `bundle build -t {}` to create it.",
+                tag,
+                tag,
+            );
+        }
+
+        let (manifest_json, _digest) = self
+            .load_manifest(tag)
+            .with_context(|| format!("loading cached manifest for '{}'", tag))?;
+
+        let manifest = ImageManifest::from_reader(manifest_json.as_slice())
+            .with_context(|| format!("parsing manifest for '{}'", tag))?;
+
+        let config_digest = manifest.config().digest().to_string();
+        let config_data = self
+            .load_blob(&config_digest)
+            .with_context(|| format!("loading config blob for '{}'", tag))?;
+
+        let mut new_blobs: HashMap<String, Vec<u8>> = HashMap::new();
+
+        // Config blob is included in new_blobs for consistency with
+        // store_built_image, even though push_image uploads it via config_data.
+        new_blobs.insert(config_digest, config_data.clone());
+
+        for layer in manifest.layers() {
+            let digest = layer.digest().to_string();
+            let data = self.load_blob(&digest).with_context(|| {
+                format!(
+                    "loading layer blob {} for tag '{}' — re-run `bundle build -t {}`",
+                    digest, tag, tag
+                )
+            })?;
+            new_blobs.insert(digest, data);
+        }
+
+        Ok(LocalImage {
+            manifest,
+            config_data,
+            new_blobs,
+        })
+    }
+
     /// The path used for blobs — exposed for tests.
     #[allow(dead_code)]
     pub fn blobs_dir(&self) -> PathBuf {

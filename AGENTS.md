@@ -90,7 +90,11 @@ COPY --from=0 mods/*.jar    mods/            # glob against a prior stage's file
 
 Each `bundle build` produces a standard OCI image:
 - One gzipped tar layer per stage
-- Image manifest + config JSON written to the local store, or pushed directly to a registry
+- Image manifest + config JSON written to the local store
+
+Use `-t NAME` to tag the result locally (for use in `bundle.toml` without a registry)
+or `-t ghcr.io/org/image:tag` to push to a registry immediately after the build.
+Both forms of `-t` may be combined in a single `bundle build` invocation.
 
 ### Server Workflow
 
@@ -101,6 +105,14 @@ bundle server apply         # overlays files from locked images onto server dir
 bundle server diff          # shows what apply would change
 bundle server run           # pull + apply + exec server jar
 ```
+
+Bundle sources in `bundle.toml` can be:
+
+| Source | Example | Resolution |
+|--------|---------|------------|
+| OCI registry reference | `ghcr.io/org/plugin:latest` | Pulled from the registry |
+| Semver range | `ghcr.io/org/plugin:^1.2` | Resolved to the highest matching tag |
+| Local tag | `myplugin:latest` | Read from local cache (set with `bundle build -t myplugin:latest`) |
 
 ---
 
@@ -116,18 +128,49 @@ cargo build --release
 # Run all tests (unit + doc)
 cargo test
 
-# Lint (mirrors CI – must produce zero warnings)
-cargo clippy --no-deps --all-targets -- -D warnings
-
-# Format check (mirrors CI)
-cargo fmt --all --check
-
-# Auto-format
+# Auto-format (run before committing)
 cargo fmt --all
 
-# Check dependency licences / advisories (requires cargo-deny)
+# Format check (mirrors CI — fails on unformatted code)
+cargo fmt --all --check
+
+# Lint (mirrors CI — must produce zero warnings)
+cargo clippy --no-deps --all-targets -- -D warnings
+
+# Check dependency licences and advisories (requires cargo-deny)
 cargo deny check
 ```
+
+## After Implementing a Feature
+
+Run the full local CI gate in this order before opening a PR.  This mirrors
+exactly what `check.yml` runs on every push:
+
+```sh
+# 1. Format — fix any style issues first so clippy sees clean code
+cargo fmt --all
+
+# 2. Lint — zero warnings required
+cargo clippy --no-deps --all-targets -- -D warnings
+
+# 3. Tests — all must pass
+cargo test
+
+# 4. Licence / advisory check — must pass
+cargo deny check
+```
+
+A single convenience script (run from the repo root):
+
+```sh
+cargo fmt --all && \
+cargo clippy --no-deps --all-targets -- -D warnings && \
+cargo test && \
+cargo deny check
+```
+
+> **Note:** `cargo deny` requires `cargo-deny` to be installed:
+> `cargo install cargo-deny`
 
 ### Cross-compilation targets used in CI
 
