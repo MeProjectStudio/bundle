@@ -532,6 +532,50 @@ mod tests {
     }
 
     #[test]
+    fn cli_build_bare_local_tag_parses() {
+        // Bare names (no registry hostname) are local-only tags — they must be
+        // accepted by the CLI and NOT rejected at parse time.
+        let cli = Cli::try_parse_from(["bundle", "build", "-t", "myplugin:latest"]);
+        assert!(
+            cli.is_ok(),
+            "bare local tag should be accepted by the CLI: {:?}",
+            cli
+        );
+        if let Ok(Cli {
+            command: Commands::Build { tag, .. },
+        }) = cli
+        {
+            assert_eq!(tag, vec!["myplugin:latest".to_string()]);
+        }
+    }
+
+    #[test]
+    fn cli_build_mixed_local_and_registry_tags_parse() {
+        // A local tag and a registry tag may be combined in a single build invocation.
+        let cli = Cli::try_parse_from([
+            "bundle",
+            "build",
+            "-t",
+            "myplugin:latest",
+            "-t",
+            "ghcr.io/me/myplugin:latest",
+        ]);
+        assert!(
+            cli.is_ok(),
+            "mixed local + registry tags should parse: {:?}",
+            cli
+        );
+        if let Ok(Cli {
+            command: Commands::Build { tag, .. },
+        }) = cli
+        {
+            assert_eq!(tag.len(), 2);
+            assert!(tag.contains(&"myplugin:latest".to_string()));
+            assert!(tag.contains(&"ghcr.io/me/myplugin:latest".to_string()));
+        }
+    }
+
+    #[test]
     fn cli_push_parses() {
         let cli = Cli::try_parse_from(["bundle", "push", "ghcr.io/me/bundle:v1"]);
         assert!(cli.is_ok(), "bundle push should parse: {:?}", cli);

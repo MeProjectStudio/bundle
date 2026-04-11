@@ -212,6 +212,16 @@ pub async fn run(args: ApplyArgs) -> Result<()> {
 /// Pull a bundle manifest from the registry and store it in the local cache.
 /// Returns the parsed `ImageManifest`.
 async fn pull_bundle_to_cache(image_ref: &str, cache: &LocalCache) -> Result<ImageManifest> {
+    // Bare names are local-only — there is no registry to fall back to.
+    if !crate::registry::client::has_explicit_registry(image_ref) {
+        anyhow::bail!(
+            "local image '{}' is not in the cache.\n\
+             Run `bundle build -t {}` then `bundle server pull` to populate it.",
+            image_ref,
+            image_ref,
+        );
+    }
+
     let client = McpmRegistryClient::new();
 
     let (manifest, digest) = client
@@ -244,6 +254,16 @@ async fn pull_layers_to_cache(
     manifest: &ImageManifest,
     cache: &LocalCache,
 ) -> Result<()> {
+    // Bare names are local-only.
+    if !crate::registry::client::has_explicit_registry(image_ref) {
+        anyhow::bail!(
+            "layer blobs for local image '{}' are missing from the cache.\n\
+             Re-run `bundle build -t {}` to rebuild, then `bundle server pull`.",
+            image_ref,
+            image_ref,
+        );
+    }
+
     let client = McpmRegistryClient::new();
     client
         .fetch_layers_to_cache(image_ref, manifest, cache)
