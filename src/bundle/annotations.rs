@@ -26,7 +26,7 @@ pub const MANAGED_KEYS_ANNOTATION: &str = "bundle.managed-keys";
 /// dot-separated key paths that this bundle owns.
 ///
 /// Example:
-/// ```
+/// ```text
 /// "plugins/Essentials/config.yml" → ["home.bed-respawn", "homes.max-homes"]
 /// ```
 pub type ManagedKeys = HashMap<String, Vec<String>>;

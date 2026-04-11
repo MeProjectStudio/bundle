@@ -1,10 +1,4 @@
-mod apply;
-mod bundle;
-mod bundlefile;
-mod cmd;
-mod project;
-mod registry;
-mod util;
+use bundle::cmd;
 
 use std::path::PathBuf;
 

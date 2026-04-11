@@ -126,7 +126,7 @@ pub fn resolve(range_tag: &str, candidates: &[String]) -> Result<String> {
 /// The registry and repository portions are preserved verbatim.
 ///
 /// ```
-/// # use mcpm::registry::semver::rewrite_tag;   // (doctest only)
+/// # use bundle::registry::semver::rewrite_tag;   // (doctest only)
 /// assert_eq!(
 ///     rewrite_tag("ghcr.io/author/essentials:2.4", "v2.4.5"),
 ///     "ghcr.io/author/essentials:v2.4.5",
