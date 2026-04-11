@@ -16,11 +16,12 @@ pub struct BuildArgs {
     pub build_args: Vec<(String, String)>,
     pub tags: Vec<String>,
     pub context: Option<PathBuf>,
-    pub bundlefile: Option<PathBuf>,
+    /// Explicit path to the Bundlefile. Overrides `context`.
+    pub file: Option<PathBuf>,
 }
 
 pub async fn run(args: BuildArgs) -> Result<()> {
-    let bundlefile_path = if let Some(explicit) = args.bundlefile {
+    let bundlefile_path = if let Some(explicit) = args.file {
         explicit
     } else {
         let context = args

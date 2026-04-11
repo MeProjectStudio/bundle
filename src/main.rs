@@ -61,8 +61,14 @@ enum Commands {
     /// Build an OCI bundle image from a Bundlefile.
     ///
     /// Fetches or copies all declared sources, packs them into OCI layers,
-    /// and stores the result in `~/.cache/bundle/`.  Use `-t` to push
-    /// immediately after a successful build.
+    /// and stores the result in the local cache.
+    ///
+    /// Use -t to tag the result:
+    ///
+    ///   -t myplugin:latest           store as a local tag (no registry needed)
+    ///   -t ghcr.io/org/plugin:1.0   tag and push to a registry immediately
+    ///
+    /// Both forms may be combined in a single invocation.
     Build {
         /// Override a Bundlefile ARG: --build-arg KEY=VALUE.
         ///
@@ -76,9 +82,16 @@ enum Commands {
         )]
         build_arg: Vec<(String, String)>,
 
-        /// Tag and push after building. May be repeated for multiple tags.
-        /// The image is always cached locally regardless — push more tags
-        /// later with `bundle push`.
+        /// Tag the built image. May be repeated.
+        ///
+        /// Bare names (no registry hostname) are stored as local tags and
+        /// can be referenced directly in bundle.toml without a registry:
+        ///   -t myplugin:latest
+        ///
+        /// Names with a registry hostname are pushed to that registry:
+        ///   -t ghcr.io/org/plugin:latest
+        ///
+        /// The image is always cached locally regardless of which form is used.
         #[arg(
             short = 't',
             long = "tag",
@@ -93,19 +106,35 @@ enum Commands {
 
         /// Explicit path to the Bundlefile. Overrides the context directory.
         #[arg(
-            long,
+            short = 'f',
+            long = "file",
             value_name = "FILE",
             value_hint = ValueHint::FilePath,
         )]
-        bundlefile: Option<PathBuf>,
+        file: Option<PathBuf>,
     },
 
-    /// Push the most recently built image to a registry.
-    /// Requires a fully-qualified reference including the registry hostname.
+    /// Push a built image to a registry.
+    ///
+    /// One argument — push the most recently built image:
+    ///
+    ///   bundle push ghcr.io/org/plugin:latest
+    ///
+    /// Two arguments — push a locally-tagged image (from `bundle build -t NAME`):
+    ///
+    ///   bundle push myplugin:latest ghcr.io/org/plugin:1.0
+    ///               local source    registry destination
     Push {
-        /// Image reference to push to, e.g. `ghcr.io/myorg/myplugin:latest`.
-        #[arg(value_name = "IMAGE:TAG", value_hint = ValueHint::Other)]
-        image_tag: String,
+        /// Registry destination (single-argument form), or local source tag
+        /// when a registry destination is given as the second argument
+        /// (e.g. `myplugin:latest`).
+        #[arg(value_name = "SOURCE_OR_DEST", value_hint = ValueHint::Other)]
+        source_or_dest: String,
+
+        /// Registry destination when a local source tag is given as the first
+        /// argument, e.g. `ghcr.io/org/plugin:1.0`.
+        #[arg(value_name = "DEST", value_hint = ValueHint::Other)]
+        dest: Option<String>,
     },
 
     /// Manage OCI bundles on a Minecraft server (pull, apply, run).
@@ -126,8 +155,14 @@ enum ServerCommands {
     /// Scaffold a bundle.toml in the current directory.
     Init,
 
-    /// Resolve all bundle tags, download layer blobs, write bundle.lock.
-    /// No filesystem changes — use `bundle server apply` to extract layers.
+    /// Resolve all bundle sources, download blobs, and write bundle.lock.
+    ///
+    /// Registry references are resolved over the network.
+    /// Local tags (e.g. myplugin:latest set with `bundle build -t NAME`)
+    /// are resolved from the local cache — no network access required.
+    ///
+    /// Makes no changes to the server directory.
+    /// Use `bundle server apply` to extract the locked layers.
     Pull,
 
     /// Pull bundles then extract them onto the server directory.
@@ -227,21 +262,31 @@ async fn run() -> Result<()> {
             build_arg,
             tag,
             path,
-            bundlefile,
+            file,
         } => {
             cmd::build::run(cmd::build::BuildArgs {
                 build_args: build_arg,
                 tags: tag,
                 context: path,
-                bundlefile,
+                file,
             })
             .await
             .context("bundle build failed")?;
         }
 
-        Commands::Push { image_tag } => {
+        Commands::Push {
+            source_or_dest,
+            dest,
+        } => {
+            // One arg  → dest only (load from built/ slot).
+            // Two args → source_or_dest is a local tag, dest is the registry ref.
+            let (local_tag, image_ref) = match dest {
+                Some(d) => (Some(source_or_dest), d),
+                None => (None, source_or_dest),
+            };
             cmd::push::run(cmd::push::PushArgs {
-                image_ref: image_tag,
+                image_ref,
+                local_tag,
             })
             .await
             .context("bundle push failed")?;
@@ -520,14 +565,26 @@ mod tests {
     }
 
     #[test]
-    fn cli_build_with_bundlefile_parses() {
-        let cli = Cli::try_parse_from(["bundle", "build", "--bundlefile", "path/to/Bundlefile"]);
+    fn cli_build_with_file_flag_parses() {
+        let cli = Cli::try_parse_from(["bundle", "build", "--file", "path/to/Bundlefile"]);
         assert!(cli.is_ok());
         if let Ok(Cli {
-            command: Commands::Build { bundlefile, .. },
+            command: Commands::Build { file, .. },
         }) = cli
         {
-            assert_eq!(bundlefile, Some(PathBuf::from("path/to/Bundlefile")));
+            assert_eq!(file, Some(PathBuf::from("path/to/Bundlefile")));
+        }
+    }
+
+    #[test]
+    fn cli_build_with_short_file_flag_parses() {
+        let cli = Cli::try_parse_from(["bundle", "build", "-f", "path/to/Bundlefile"]);
+        assert!(cli.is_ok());
+        if let Ok(Cli {
+            command: Commands::Build { file, .. },
+        }) = cli
+        {
+            assert_eq!(file, Some(PathBuf::from("path/to/Bundlefile")));
         }
     }
 
@@ -580,10 +637,37 @@ mod tests {
         let cli = Cli::try_parse_from(["bundle", "push", "ghcr.io/me/bundle:v1"]);
         assert!(cli.is_ok(), "bundle push should parse: {:?}", cli);
         if let Ok(Cli {
-            command: Commands::Push { image_tag },
+            command:
+                Commands::Push {
+                    source_or_dest,
+                    dest,
+                },
         }) = cli
         {
-            assert_eq!(image_tag, "ghcr.io/me/bundle:v1");
+            assert_eq!(source_or_dest, "ghcr.io/me/bundle:v1");
+            assert!(dest.is_none(), "single-arg push should have no dest");
+        }
+    }
+
+    #[test]
+    fn cli_push_with_local_source_parses() {
+        let cli = Cli::try_parse_from([
+            "bundle",
+            "push",
+            "myplugin:latest",
+            "ghcr.io/me/myplugin:1.0",
+        ]);
+        assert!(cli.is_ok(), "two-arg push should parse: {:?}", cli);
+        if let Ok(Cli {
+            command:
+                Commands::Push {
+                    source_or_dest,
+                    dest,
+                },
+        }) = cli
+        {
+            assert_eq!(source_or_dest, "myplugin:latest");
+            assert_eq!(dest, Some("ghcr.io/me/myplugin:1.0".to_string()));
         }
     }
 

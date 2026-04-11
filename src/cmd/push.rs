@@ -1,6 +1,8 @@
 use anyhow::{bail, Context, Result};
 
-use crate::registry::client::{parse_ref, require_explicit_registry, McpmRegistryClient};
+use crate::registry::client::{
+    has_explicit_registry, parse_ref, require_explicit_registry, McpmRegistryClient,
+};
 use crate::registry::types::LocalCache;
 
 macro_rules! log {
@@ -8,7 +10,10 @@ macro_rules! log {
 }
 
 pub struct PushArgs {
+    /// Registry destination (must have explicit registry hostname).
     pub image_ref: String,
+    /// Local source tag (`bundle build -t NAME`). `None` → load from `built/` slot.
+    pub local_tag: Option<String>,
 }
 
 pub async fn run(args: PushArgs) -> Result<()> {
@@ -32,9 +37,27 @@ pub async fn run(args: PushArgs) -> Result<()> {
     log!("target: {}", image_ref);
 
     let cache = LocalCache::open().context("opening local cache")?;
-    let image = cache
-        .load_built_image()
-        .context("loading built image from local cache (have you run `bundle build`?)")?;
+    let image = match &args.local_tag {
+        Some(tag) => {
+            if has_explicit_registry(tag) {
+                anyhow::bail!(
+                    "'{}' looks like a registry reference, not a local tag.\n\
+                     Local source must be a bare name, e.g.:\n\
+                     \n    bundle push {} {}",
+                    tag,
+                    tag.split('/').next_back().unwrap_or(tag),
+                    args.image_ref,
+                );
+            }
+            log!("source: local tag '{}'", tag);
+            cache
+                .load_local_image_by_tag(tag)
+                .with_context(|| format!("loading local tag '{}'", tag))?
+        }
+        None => cache
+            .load_built_image()
+            .context("loading built image from local cache (have you run `bundle build`?)")?,
+    };
 
     log!(
         "{} layer(s), {} new blob(s)",
