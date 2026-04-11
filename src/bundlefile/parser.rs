@@ -837,6 +837,22 @@ mod tests {
         );
     }
 
+    #[test]
+    fn copy_glob_src_stored_verbatim() {
+        // Glob metacharacters in the src must be preserved as-is in CopyDirective::src.
+        // Expansion happens at build time, not parse time.
+        let src = "FROM scratch\nCOPY plugins/**/*.jar plugins/\n";
+        let bf = parse(src, &no_overrides()).unwrap();
+        let copy = &bf.stages[0].copies[0];
+        assert_eq!(
+            copy.src,
+            PathBuf::from("plugins/**/*.jar"),
+            "glob pattern must be stored verbatim"
+        );
+        assert_eq!(copy.dest, "plugins/");
+        assert!(matches!(&copy.from, CopyFrom::BuildContext));
+    }
+
     // ── FROM ──────────────────────────────────────────────────────────────────
 
     // ── LABEL ─────────────────────────────────────────────────────────────────

@@ -65,11 +65,26 @@ Mirrors Dockerfile syntax. Supported directives:
 | `FROM <image> [AS <name>]` | Begin a new stage. `scratch` is the empty base. |
 | `ARG <name>[=<default>]` | Declare a build argument; substituted with `${VAR}`. |
 | `ADD [--checksum=sha256:<hex>] <src> <dest>` | Copy a local file/dir or download a URL into the layer. |
-| `COPY [--from=<index\|name>] <src> <dest>` | Copy from the build context or a previous stage. |
+| `COPY [--from=<index\|name>] <src> <dest>` | Copy from the build context or a previous stage. `src` may contain glob metacharacters (`*`, `?`, `[…]`, `**`). |
 | `LABEL <key>=<value> …` | Embed metadata in the OCI image config. |
 | `MANAGE <config-path>: <key>, …` | Declare config keys this bundle owns (for merge). |
 
 Line continuations (`\`) and `#` comments are supported.
+
+#### Glob behaviour in `COPY`
+
+When `src` contains glob metacharacters the pattern is expanded at **build time**, not parse time:
+
+- `*` matches any characters within a single path segment; it does not cross `/`.
+- `**` matches zero or more path segments recursively.
+- The non-wildcard directory prefix of the pattern (e.g. `plugins/` in `plugins/**/*.jar`) is stripped from each match; the remainder is appended to `dest`.
+- Zero matches is a hard error.
+
+```text
+COPY plugins/*.jar          output/          # flat match — all jars directly in plugins/
+COPY plugins/**/*.jar       output/          # recursive — preserves subdirectory structure
+COPY --from=0 mods/*.jar    mods/            # glob against a prior stage's file tree
+```
 
 ### OCI Image Format
 

@@ -352,9 +352,18 @@ fn resolve_copy(
             } else {
                 copy.src.clone()
             };
-            eprintln!("[build]     COPY {} → {}", full.display(), copy.dest);
-            collect_add_entries_for_path(&full, &copy.dest)
-                .map(|es| es.into_iter().map(|e| (e.path, e.data)).collect())
+            let full_str = full
+                .to_str()
+                .ok_or_else(|| anyhow::anyhow!("source path contains non-UTF-8 characters"))?;
+
+            if has_glob_chars(full_str) {
+                eprintln!("[build]     COPY {} → {} (glob)", full_str, copy.dest);
+                resolve_glob_from_context(full_str, &copy.dest)
+            } else {
+                eprintln!("[build]     COPY {} → {}", full.display(), copy.dest);
+                collect_add_entries_for_path(&full, &copy.dest)
+                    .map(|es| es.into_iter().map(|e| (e.path, e.data)).collect())
+            }
         }
 
         CopyFrom::Stage(stage_ref) => {
@@ -362,48 +371,176 @@ fn resolve_copy(
             let source_files = &stage_outputs[idx];
             let src_str = copy.src.to_string_lossy().to_string();
 
-            eprintln!(
-                "[build]     COPY --from={} (stage {}) {} → {}",
-                stage_ref, idx, src_str, copy.dest
-            );
-
-            let mut result: Vec<(String, Vec<u8>)> = Vec::new();
-
-            for (file_path, data) in source_files {
-                if *file_path == src_str {
-                    // Exact file match.
-                    result.push((copy.dest.clone(), data.clone()));
-                } else if file_path.starts_with(&format!("{}/", src_str)) {
-                    // File inside a matched directory subtree.
-                    let rel = &file_path[src_str.len() + 1..];
-                    let dest_path = if copy.dest.ends_with('/') {
-                        format!("{}{}", copy.dest, rel)
-                    } else {
-                        format!("{}/{}", copy.dest, rel)
-                    };
-                    result.push((dest_path, data.clone()));
-                }
-            }
-
-            if result.is_empty() {
-                bail!(
-                    "COPY --from={} (stage {}): no files matched path '{}'\n\
-                     Available paths in that stage: {}",
-                    stage_ref,
-                    idx,
-                    src_str,
-                    {
-                        let mut paths: Vec<&str> =
-                            source_files.keys().map(String::as_str).collect();
-                        paths.sort_unstable();
-                        paths.join(", ")
-                    }
+            if has_glob_chars(&src_str) {
+                eprintln!(
+                    "[build]     COPY --from={} (stage {}) {} → {} (glob)",
+                    stage_ref, idx, src_str, copy.dest
                 );
-            }
+                resolve_glob_from_stage(&src_str, &copy.dest, stage_ref, idx, source_files)
+            } else {
+                eprintln!(
+                    "[build]     COPY --from={} (stage {}) {} → {}",
+                    stage_ref, idx, src_str, copy.dest
+                );
 
-            Ok(result)
+                let mut result: Vec<(String, Vec<u8>)> = Vec::new();
+
+                for (file_path, data) in source_files {
+                    if *file_path == src_str {
+                        // Exact file match.
+                        result.push((copy.dest.clone(), data.clone()));
+                    } else if file_path.starts_with(&format!("{}/", src_str)) {
+                        // File inside a matched directory subtree.
+                        let rel = &file_path[src_str.len() + 1..];
+                        let dest_path = if copy.dest.ends_with('/') {
+                            format!("{}{}", copy.dest, rel)
+                        } else {
+                            format!("{}/{}", copy.dest, rel)
+                        };
+                        result.push((dest_path, data.clone()));
+                    }
+                }
+
+                if result.is_empty() {
+                    bail!(
+                        "COPY --from={} (stage {}): no files matched path '{}'\n\
+                         Available paths in that stage: {}",
+                        stage_ref,
+                        idx,
+                        src_str,
+                        {
+                            let mut paths: Vec<&str> =
+                                source_files.keys().map(String::as_str).collect();
+                            paths.sort_unstable();
+                            paths.join(", ")
+                        }
+                    );
+                }
+
+                Ok(result)
+            }
         }
     }
+}
+
+/// Returns true if `s` contains any glob metacharacter (`*`, `?`, `[`).
+fn has_glob_chars(s: &str) -> bool {
+    s.contains(['*', '?', '['])
+}
+
+/// Returns the non-wildcard directory prefix of a glob pattern.
+///
+/// Used to strip the fixed prefix from matched paths so only the
+/// variable portion is appended to the destination.
+///
+/// Examples:
+/// - `"plugins/**/*.jar"` → `"plugins/"`
+/// - `"src/*.rs"` → `"src/"`
+/// - `"*.jar"` → `""`
+fn glob_base_prefix(pattern: &str) -> &str {
+    let meta_pos = pattern.find(['*', '?', '[']).unwrap_or(pattern.len());
+    let base_end = pattern[..meta_pos].rfind('/').map(|i| i + 1).unwrap_or(0);
+    &pattern[..base_end]
+}
+
+/// Joins a destination prefix with the variable tail of a glob match.
+fn join_glob_dest(dest: &str, rel: &str) -> String {
+    if dest.ends_with('/') {
+        format!("{}{}", dest, rel)
+    } else {
+        format!("{}/{}", dest, rel)
+    }
+}
+
+/// Expands a glob pattern against the real filesystem and returns
+/// `(dest_path, bytes)` pairs for every matched regular file.
+///
+/// `full_pattern` must be an absolute path string that may contain
+/// glob metacharacters.  The non-wildcard directory prefix is stripped
+/// from each match before combining with `dest`.
+fn resolve_glob_from_context(full_pattern: &str, dest: &str) -> Result<Vec<(String, Vec<u8>)>> {
+    let base = glob_base_prefix(full_pattern).to_string();
+
+    let matches = glob::glob(full_pattern)
+        .with_context(|| format!("invalid glob pattern '{}'", full_pattern))?;
+
+    let mut result = Vec::new();
+    for entry in matches {
+        let path = entry.with_context(|| format!("error expanding glob '{}'", full_pattern))?;
+        if path.is_dir() {
+            continue; // directories are traversed implicitly via their contents
+        }
+        let path_str = path.to_str().ok_or_else(|| {
+            anyhow::anyhow!(
+                "matched path '{}' contains non-UTF-8 characters",
+                path.display()
+            )
+        })?;
+        let rel = path_str.strip_prefix(&base).unwrap_or(path_str);
+        let dest_path = join_glob_dest(dest, rel);
+        let data = std::fs::read(&path)
+            .with_context(|| format!("reading COPY source '{}'", path.display()))?;
+        result.push((dest_path, data));
+    }
+
+    if result.is_empty() {
+        bail!("COPY: glob '{}' matched no files", full_pattern);
+    }
+
+    Ok(result)
+}
+
+/// Matches a glob pattern against the in-memory file tree of a previous stage
+/// and returns `(dest_path, bytes)` pairs for every matching path.
+///
+/// Uses `require_literal_separator = true` so `*` does not cross directory
+/// boundaries and `**` is required for recursive matching.
+fn resolve_glob_from_stage(
+    src_pattern: &str,
+    dest: &str,
+    stage_ref: &str,
+    stage_idx: usize,
+    source_files: &HashMap<String, Vec<u8>>,
+) -> Result<Vec<(String, Vec<u8>)>> {
+    let pattern = glob::Pattern::new(src_pattern)
+        .with_context(|| format!("invalid glob pattern '{}'", src_pattern))?;
+    let opts = glob::MatchOptions {
+        case_sensitive: true,
+        require_literal_separator: true,
+        require_literal_leading_dot: false,
+    };
+    let base = glob_base_prefix(src_pattern).to_string();
+
+    // Sort paths for deterministic output ordering.
+    let mut all_paths: Vec<&str> = source_files.keys().map(String::as_str).collect();
+    all_paths.sort_unstable();
+
+    let mut result = Vec::new();
+    for file_path in &all_paths {
+        if pattern.matches_with(file_path, opts) {
+            let rel = file_path.strip_prefix(&base).unwrap_or(file_path);
+            let dest_path = join_glob_dest(dest, rel);
+            let data = source_files[*file_path].clone();
+            result.push((dest_path, data));
+        }
+    }
+
+    if result.is_empty() {
+        bail!(
+            "COPY --from={} (stage {}): glob '{}' matched no files\n\
+             Available paths in that stage: {}",
+            stage_ref,
+            stage_idx,
+            src_pattern,
+            {
+                let mut paths: Vec<&str> = source_files.keys().map(String::as_str).collect();
+                paths.sort_unstable();
+                paths.join(", ")
+            }
+        );
+    }
+
+    Ok(result)
 }
 
 /// Resolve a stage reference (numeric index string or stage name) to a
@@ -969,5 +1106,147 @@ mod tests {
                 digest
             );
         }
+    }
+
+    #[tokio::test]
+    async fn build_copy_glob_from_context_flat() {
+        // COPY plugins/*.jar output/  — matches multiple files in one directory.
+        let dir = TempDir::new().unwrap();
+        write_temp_file(dir.path(), "plugins/Foo.jar", b"foo-bytes");
+        write_temp_file(dir.path(), "plugins/Bar.jar", b"bar-bytes");
+        write_temp_file(dir.path(), "plugins/readme.txt", b"not-a-jar");
+
+        let bundlefile_content = "FROM scratch\nCOPY plugins/*.jar output/\n";
+        let bundlefile_path = dir.path().join("Bundlefile");
+        std::fs::write(&bundlefile_path, bundlefile_content).unwrap();
+
+        let image = build(&bundlefile_path, &HashMap::new()).await.unwrap();
+        let layer_data = image
+            .get_blob(image.manifest.layers()[0].digest().as_ref())
+            .unwrap();
+        let unpack_dir = TempDir::new().unwrap();
+        crate::bundle::layer::unpack_layer(layer_data, unpack_dir.path()).unwrap();
+
+        assert!(
+            unpack_dir.path().join("output/Foo.jar").exists(),
+            "Foo.jar should be at output/Foo.jar"
+        );
+        assert!(
+            unpack_dir.path().join("output/Bar.jar").exists(),
+            "Bar.jar should be at output/Bar.jar"
+        );
+        assert!(
+            !unpack_dir.path().join("output/readme.txt").exists(),
+            "readme.txt should not match *.jar"
+        );
+    }
+
+    #[tokio::test]
+    async fn build_copy_glob_from_context_recursive() {
+        // COPY plugins/**/*.jar output/  — matches files in subdirectories too,
+        // preserving the relative directory structure under the glob base.
+        let dir = TempDir::new().unwrap();
+        write_temp_file(dir.path(), "plugins/Top.jar", b"top");
+        write_temp_file(dir.path(), "plugins/sub/Deep.jar", b"deep");
+
+        let bundlefile_content = "FROM scratch\nCOPY plugins/**/*.jar output/\n";
+        let bundlefile_path = dir.path().join("Bundlefile");
+        std::fs::write(&bundlefile_path, bundlefile_content).unwrap();
+
+        let image = build(&bundlefile_path, &HashMap::new()).await.unwrap();
+        let layer_data = image
+            .get_blob(image.manifest.layers()[0].digest().as_ref())
+            .unwrap();
+        let unpack_dir = TempDir::new().unwrap();
+        crate::bundle::layer::unpack_layer(layer_data, unpack_dir.path()).unwrap();
+
+        assert!(
+            unpack_dir.path().join("output/Top.jar").exists(),
+            "top-level jar should be at output/Top.jar"
+        );
+        assert!(
+            unpack_dir.path().join("output/sub/Deep.jar").exists(),
+            "nested jar should preserve subdir: output/sub/Deep.jar"
+        );
+    }
+
+    #[tokio::test]
+    async fn build_copy_glob_from_context_no_match_is_error() {
+        let dir = TempDir::new().unwrap();
+        write_temp_file(dir.path(), "plugins/readme.txt", b"text");
+
+        let bundlefile_content = "FROM scratch\nCOPY plugins/*.jar output/\n";
+        let bundlefile_path = dir.path().join("Bundlefile");
+        std::fs::write(&bundlefile_path, bundlefile_content).unwrap();
+
+        let result = build(&bundlefile_path, &HashMap::new()).await;
+        assert!(result.is_err(), "glob matching no files must be an error");
+        let msg = format!("{:#}", result.unwrap_err());
+        assert!(
+            msg.contains("matched no files"),
+            "error should mention 'matched no files', got: {msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn build_copy_glob_from_stage() {
+        // COPY --from=0 mods/*.jar output/  — glob matches files in a prior stage.
+        let dir = TempDir::new().unwrap();
+        write_temp_file(dir.path(), "jars/a.jar", b"a-bytes");
+        write_temp_file(dir.path(), "jars/b.jar", b"b-bytes");
+
+        let bundlefile_content = concat!(
+            "FROM scratch AS builder\n",
+            "ADD ./jars/a.jar mods/a.jar\n",
+            "ADD ./jars/b.jar mods/b.jar\n",
+            "\n",
+            "FROM scratch\n",
+            "COPY --from=0 mods/*.jar output/\n",
+        );
+        let bundlefile_path = dir.path().join("Bundlefile");
+        std::fs::write(&bundlefile_path, bundlefile_content).unwrap();
+
+        let image = build(&bundlefile_path, &HashMap::new()).await.unwrap();
+
+        let last_layer = image.manifest.layers().last().unwrap();
+        let layer_data = image.get_blob(last_layer.digest().as_ref()).unwrap();
+        let unpack_dir = TempDir::new().unwrap();
+        crate::bundle::layer::unpack_layer(layer_data, unpack_dir.path()).unwrap();
+
+        assert!(
+            unpack_dir.path().join("output/a.jar").exists(),
+            "a.jar should be at output/a.jar"
+        );
+        assert!(
+            unpack_dir.path().join("output/b.jar").exists(),
+            "b.jar should be at output/b.jar"
+        );
+    }
+
+    #[tokio::test]
+    async fn build_copy_glob_from_stage_no_match_is_error() {
+        let dir = TempDir::new().unwrap();
+        write_temp_file(dir.path(), "jars/a.jar", b"a-bytes");
+
+        let bundlefile_content = concat!(
+            "FROM scratch AS builder\n",
+            "ADD ./jars/a.jar mods/a.jar\n",
+            "\n",
+            "FROM scratch\n",
+            "COPY --from=0 plugins/*.jar output/\n",
+        );
+        let bundlefile_path = dir.path().join("Bundlefile");
+        std::fs::write(&bundlefile_path, bundlefile_content).unwrap();
+
+        let result = build(&bundlefile_path, &HashMap::new()).await;
+        assert!(
+            result.is_err(),
+            "glob matching no stage files must be an error"
+        );
+        let msg = format!("{:#}", result.unwrap_err());
+        assert!(
+            msg.contains("matched no files"),
+            "error should mention 'matched no files', got: {msg}"
+        );
     }
 }
