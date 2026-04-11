@@ -448,7 +448,7 @@ fn handle_manage(rest: &str, args: &HashMap<String, String>) -> Result<ManageDir
 /// `args`. Unknown variable references are left as-is so forward references and
 /// build-time variables can be resolved downstream without causing parse errors.
 pub fn substitute(s: &str, args: &HashMap<String, String>) -> String {
-    if !s.contains("${") {
+    if !s.contains('$') {
         return s.to_string();
     }
 
@@ -456,33 +456,62 @@ pub fn substitute(s: &str, args: &HashMap<String, String>) -> String {
     let mut chars = s.chars().peekable();
 
     while let Some(ch) = chars.next() {
-        if ch == '$' && chars.peek() == Some(&'{') {
-            chars.next(); // consume '{'
-            let mut name = String::new();
-            let mut closed = false;
-            for inner in chars.by_ref() {
-                if inner == '}' {
-                    closed = true;
-                    break;
+        if ch != '$' {
+            result.push(ch);
+            continue;
+        }
+
+        match chars.peek().copied() {
+            Some('{') => {
+                // ${NAME} form.
+                chars.next(); // consume '{'
+                let mut name = String::new();
+                let mut closed = false;
+                for inner in chars.by_ref() {
+                    if inner == '}' {
+                        closed = true;
+                        break;
+                    }
+                    name.push(inner);
                 }
-                name.push(inner);
+                if closed {
+                    if let Some(val) = args.get(&name) {
+                        result.push_str(val);
+                    } else {
+                        // Unknown variable — preserve the original `${NAME}` reference.
+                        result.push_str("${");
+                        result.push_str(&name);
+                        result.push('}');
+                    }
+                } else {
+                    // Unterminated `${` — emit literally.
+                    result.push_str("${");
+                    result.push_str(&name);
+                }
             }
-            if closed {
+            Some(c) if c.is_ascii_alphabetic() || c == '_' => {
+                // $NAME form — greedily consume [A-Za-z0-9_] characters.
+                let mut name = String::new();
+                while let Some(&next) = chars.peek() {
+                    if next.is_ascii_alphanumeric() || next == '_' {
+                        name.push(next);
+                        chars.next();
+                    } else {
+                        break;
+                    }
+                }
                 if let Some(val) = args.get(&name) {
                     result.push_str(val);
                 } else {
-                    // Unknown variable — preserve the original `${NAME}` reference.
-                    result.push_str("${");
+                    // Unknown variable — preserve the original `$NAME` reference.
+                    result.push('$');
                     result.push_str(&name);
-                    result.push('}');
                 }
-            } else {
-                // Unterminated `${` — emit literally.
-                result.push_str("${");
-                result.push_str(&name);
             }
-        } else {
-            result.push(ch);
+            _ => {
+                // Bare `$` not followed by `{` or an identifier start — emit literally.
+                result.push('$');
+            }
         }
     }
 
@@ -1186,6 +1215,66 @@ mod tests {
         args.insert("A".to_string(), "hello".to_string());
         let result = substitute("${A}-${B}", &args);
         assert_eq!(result, "hello-${B}");
+    }
+
+    #[test]
+    fn substitute_bare_var_expands() {
+        let mut args = HashMap::new();
+        args.insert("VER".to_string(), "1.2.3".to_string());
+        assert_eq!(substitute("plugin-$VER.jar", &args), "plugin-1.2.3.jar");
+    }
+
+    #[test]
+    fn substitute_bare_var_unknown_preserved() {
+        let args = HashMap::new();
+        assert_eq!(substitute("$UNKNOWN", &args), "$UNKNOWN");
+    }
+
+    #[test]
+    fn substitute_bare_var_stops_at_non_ident_char() {
+        // `.` is not in [A-Za-z0-9_], so expansion stops there.
+        let mut args = HashMap::new();
+        args.insert("DIR".to_string(), "plugins".to_string());
+        assert_eq!(substitute("$DIR/file.jar", &args), "plugins/file.jar");
+    }
+
+    #[test]
+    fn substitute_bare_var_and_braced_form_together() {
+        let mut args = HashMap::new();
+        args.insert("A".to_string(), "foo".to_string());
+        args.insert("B".to_string(), "bar".to_string());
+        assert_eq!(substitute("$A-${B}", &args), "foo-bar");
+    }
+
+    #[test]
+    fn substitute_bare_dollar_not_followed_by_ident_emitted_literally() {
+        let args = HashMap::new();
+        // `$` followed by a space or end-of-string is passed through unchanged.
+        assert_eq!(substitute("cost is $10", &args), "cost is $10");
+        assert_eq!(substitute("trailing$", &args), "trailing$");
+    }
+
+    #[test]
+    fn arg_bare_dollar_substitution_in_from() {
+        // End-to-end: ARG + $VAR form used in FROM and ADD.
+        let src = "ARG VER=1.0\nFROM ghcr.io/author/bundle:$VER\n";
+        let bf = parse(src, &no_overrides()).unwrap();
+        assert_eq!(bf.stages[0].from, "ghcr.io/author/bundle:1.0");
+    }
+
+    #[test]
+    fn arg_bare_dollar_substitution_in_add_dest() {
+        let src = "ARG DIR=plugins\nFROM scratch\nADD ./p.jar $DIR/p.jar\n";
+        let bf = parse(src, &no_overrides()).unwrap();
+        assert_eq!(bf.stages[0].adds[0].dest, "plugins/p.jar");
+    }
+
+    #[test]
+    fn arg_bare_dollar_chaining() {
+        // ARG FULL=$BASE-jre should resolve using the bare-dollar form.
+        let src = "ARG BASE=1.0\nARG FULL=$BASE-jre\nFROM img:$FULL\n";
+        let bf = parse(src, &no_overrides()).unwrap();
+        assert_eq!(bf.stages[0].from, "img:1.0-jre");
     }
 
     // ── Multi-stage build ─────────────────────────────────────────────────────
