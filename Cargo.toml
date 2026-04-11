@@ -45,6 +45,7 @@ semver = "1"
 git-version = "0.3"
 self_update = { version = "0.43.1", features = ["rustls", "archive-tar", "ureq"], default-features = false }
 glob = "0.3"
+indicatif = "0.18.4"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

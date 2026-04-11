@@ -163,6 +163,7 @@ dependencies = [
  "glob",
  "hex",
  "http",
+ "indicatif",
  "libc",
  "oci-client",
  "oci-spec",

@@ -1,8 +1,7 @@
-macro_rules! log {
-    ($($t:tt)*) => { crate::progress!("pull", $($t)*) };
-}
+use std::time::Duration;
 
 use anyhow::{Context, Result};
+use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use tokio::io::AsyncWriteExt;
 
 use crate::project::config::ProjectConfig;
@@ -11,7 +10,34 @@ use crate::registry::client::McpmRegistryClient;
 use crate::registry::semver as sv;
 use crate::registry::types::{Descriptor, LocalCache};
 
-/// Run `bundle pull`.
+// ── Progress-bar styles ───────────────────────────────────────────────────────
+
+fn downloading_style() -> ProgressStyle {
+    ProgressStyle::with_template(
+        "{prefix:.bold.dim}  {spinner:.cyan}  [{bar:40.cyan/blue}]  {bytes} / {total_bytes}",
+    )
+    .expect("valid indicatif template")
+    .progress_chars("━╾─")
+}
+
+fn pull_complete_style() -> ProgressStyle {
+    ProgressStyle::with_template("{prefix:.bold.dim}  {msg:.green}")
+        .expect("valid indicatif template")
+}
+
+fn already_exists_style() -> ProgressStyle {
+    ProgressStyle::with_template("{prefix:.bold.dim}  {msg:.dim}")
+        .expect("valid indicatif template")
+}
+
+fn error_style() -> ProgressStyle {
+    ProgressStyle::with_template("{prefix:.bold.dim}  {msg:.red}")
+        .expect("valid indicatif template")
+}
+
+// ── Entry point ───────────────────────────────────────────────────────────────
+
+/// Run `bundle server pull`.
 pub async fn run() -> Result<()> {
     let config =
         ProjectConfig::load().context("reading bundle.toml (run `bundle init` to create one)")?;
@@ -21,34 +47,30 @@ pub async fn run() -> Result<()> {
         return Ok(());
     }
 
-    eprintln!(
-        "[pull] found {} bundle(s) in bundle.toml",
-        config.bundles.len()
-    );
-
-    let cache = LocalCache::open().context("opening local cache")?;
+    let mp = MultiProgress::new();
     let client = McpmRegistryClient::new();
+    let cache = LocalCache::open().context("opening local cache")?;
 
     let mut new_lock = LockFile::default();
-
     let mut bundles = config.bundles.clone();
     bundles.sort();
 
     for image_ref in &bundles {
-        println!();
-        println!("  bundle: {}", image_ref);
+        mp.println(format!("\nPulling {image_ref}"))?;
 
         let resolved_ref = if sv::is_range(image_ref) {
             match resolve_semver(&client, image_ref).await {
                 Ok(r) => {
                     if r != *image_ref {
-                        println!("    semver {} → {}", image_ref, r);
+                        mp.println(format!("  semver {image_ref} → {r}"))?;
                     }
                     r
                 }
                 Err(e) => {
-                    eprintln!("    ! semver resolution failed for {}: {:#}", image_ref, e);
-                    eprintln!("    ! falling back to literal tag");
+                    mp.println(format!(
+                        "  ! semver resolution failed for {image_ref}: {e:#}"
+                    ))?;
+                    mp.println(String::from("  ! falling back to literal tag"))?;
                     image_ref.clone()
                 }
             }
@@ -56,20 +78,26 @@ pub async fn run() -> Result<()> {
             image_ref.clone()
         };
 
-        match pull_bundle(&client, &cache, &resolved_ref).await {
+        match pull_bundle(&client, &cache, &resolved_ref, &mp).await {
             Ok(digest) => {
-                println!("    ✓ digest: {}", short(&digest));
+                mp.println(format!("  Digest: {digest}"))?;
+                mp.println(format!(
+                    "  Status: Downloaded newer image for {resolved_ref}"
+                ))?;
                 if resolved_ref != *image_ref {
-                    new_lock.set_digest(image_ref.clone(), format!("{}@{}", resolved_ref, digest));
+                    new_lock.set_digest(image_ref.clone(), format!("{resolved_ref}@{digest}"));
                 } else {
                     new_lock.set_digest(image_ref.clone(), digest);
                 }
             }
             Err(e) => {
-                eprintln!("    ✗ error pulling '{}': {:#}", resolved_ref, e);
+                mp.println(format!("  ✗ error pulling '{resolved_ref}': {e:#}"))?;
                 let existing_lock = LockFile::load().unwrap_or_default();
                 if let Some(existing_digest) = existing_lock.get_digest(image_ref) {
-                    eprintln!("    ! keeping previous digest: {}", short(existing_digest));
+                    mp.println(format!(
+                        "  ! keeping previous digest: {}",
+                        short(existing_digest)
+                    ))?;
                     new_lock.set_digest(image_ref.clone(), existing_digest.to_string());
                 }
             }
@@ -86,23 +114,18 @@ pub async fn run() -> Result<()> {
     Ok(())
 }
 
+// ── Semver resolution ─────────────────────────────────────────────────────────
+
 /// Resolve a semver range tag in `image_ref` to a concrete tag by listing all
 /// tags from the registry and picking the highest matching stable version.
-///
-/// Returns a new image reference with the resolved tag substituted in, e.g.
-/// `"ghcr.io/author/essentials:2.4"` → `"ghcr.io/author/essentials:v2.4.5"`.
 async fn resolve_semver(client: &McpmRegistryClient, image_ref: &str) -> Result<String> {
     let tag = sv::tag_of(image_ref)
         .ok_or_else(|| anyhow::anyhow!("could not extract tag from {}", image_ref))?;
-
-    log!("  listing tags to resolve semver range {:?}", tag);
 
     let all_tags = client
         .list_tags(image_ref)
         .await
         .with_context(|| format!("listing tags for {}", image_ref))?;
-
-    log!("  {} tag(s) available", all_tags.len());
 
     let resolved_tag = sv::resolve(tag, &all_tags)
         .with_context(|| format!("resolving semver range {:?} for {}", tag, image_ref))?;
@@ -110,21 +133,22 @@ async fn resolve_semver(client: &McpmRegistryClient, image_ref: &str) -> Result<
     Ok(sv::rewrite_tag(image_ref, &resolved_tag))
 }
 
-/// Pull one bundle: fetch its manifest, cache all layer blobs, and return
-/// the manifest digest.
+// ── Per-image pull ────────────────────────────────────────────────────────────
+
+/// Pull one bundle: fetch its manifest, cache all layer + config blobs with
+/// live per-blob progress bars, and return the manifest digest.
 async fn pull_bundle(
     client: &McpmRegistryClient,
     cache: &LocalCache,
     image_ref: &str,
+    mp: &MultiProgress,
 ) -> Result<String> {
-    log!("  fetching manifest for {}", image_ref);
-
     let (manifest, digest) = client
         .pull_manifest(image_ref)
         .await
         .with_context(|| format!("fetching manifest for {}", image_ref))?;
 
-    // Serialise and cache the manifest via oci-spec.
+    // Cache the manifest JSON.
     let manifest_json = manifest
         .to_string()
         .context("serialising manifest")?
@@ -133,90 +157,54 @@ async fn pull_bundle(
         .store_manifest(image_ref, &manifest_json, &digest)
         .with_context(|| format!("caching manifest for {}", image_ref))?;
 
-    log!("  manifest digest: {}", short(&digest));
-    log!("  {} layer(s) to check", manifest.layers().len());
-
+    // Pull each layer blob.
+    let layer_count = manifest.layers().len();
     for (idx, layer) in manifest.layers().iter().enumerate() {
-        let layer_digest = layer.digest().to_string();
-        eprint!(
-            "[pull]   layer [{}/{}] {} ({} bytes) … ",
-            idx + 1,
-            manifest.layers().len(),
-            short(&layer_digest),
-            layer.size()
-        );
-
-        if cache.has_blob(&layer_digest) {
-            eprintln!("cached ✓");
-            continue;
-        }
-
-        // Download into a Vec<u8>, then store in the blob cache.
-        let raw = download_blob(client, image_ref, layer)
+        pull_blob_with_progress(client, cache, image_ref, layer, mp)
             .await
-            .with_context(|| {
-                format!(
-                    "downloading layer {} of {}",
-                    short(&layer_digest),
-                    image_ref
-                )
-            })?;
-
-        // Verify digest.
-        let actual = crate::util::digest::sha256_digest(&raw);
-        if actual != layer_digest {
-            anyhow::bail!(
-                "digest mismatch for layer {}: expected {}, got {}",
-                idx + 1,
-                layer_digest,
-                actual
-            );
-        }
-
-        cache
-            .store_blob(&raw)
-            .with_context(|| format!("storing layer blob {}", layer_digest))?;
-
-        eprintln!("done ✓ ({} bytes)", raw.len());
+            .with_context(|| format!("layer {}/{} of {}", idx + 1, layer_count, image_ref))?;
     }
 
-    {
-        let cfg_desc = manifest.config();
-        let cfg_digest = cfg_desc.digest().to_string();
-        eprint!("[pull]   config {} … ", short(&cfg_digest));
-
-        if cache.has_blob(&cfg_digest) {
-            eprintln!("cached ✓");
-        } else {
-            let raw = download_blob(client, image_ref, cfg_desc)
-                .await
-                .context("downloading image config blob")?;
-
-            let actual = crate::util::digest::sha256_digest(&raw);
-            if actual != cfg_digest {
-                anyhow::bail!(
-                    "config blob digest mismatch: expected {}, got {}",
-                    cfg_digest,
-                    actual
-                );
-            }
-
-            cache.store_blob(&raw).context("storing config blob")?;
-            eprintln!("done ✓ ({} bytes)", raw.len());
-        }
-    }
+    // Pull the config blob.
+    let cfg_desc = manifest.config().clone();
+    pull_blob_with_progress(client, cache, image_ref, &cfg_desc, mp)
+        .await
+        .context("config blob")?;
 
     Ok(digest)
 }
 
-/// Download a single OCI blob (layer or config) and return the raw bytes.
-async fn download_blob(
+// ── Per-blob pull with progress bar ──────────────────────────────────────────
+
+/// Download (or confirm cached) a single OCI blob, showing a live progress bar.
+///
+/// The bar prefix is the 12-char short hex of the blob digest, mirroring the
+/// Docker CLI style.  On completion the bar is replaced with a one-line
+/// summary: **"Pull complete"** or **"Already exists"**.
+async fn pull_blob_with_progress(
     client: &McpmRegistryClient,
+    cache: &LocalCache,
     image_ref: &str,
     descriptor: &Descriptor,
-) -> Result<Vec<u8>> {
+    mp: &MultiProgress,
+) -> Result<()> {
     let digest = descriptor.digest().to_string();
-    let mut writer = AsyncVecWriter::new();
+    let prefix = short_hex(&digest);
+
+    let pb = mp.add(ProgressBar::new(descriptor.size()));
+    pb.set_style(downloading_style());
+    pb.set_prefix(prefix);
+    pb.enable_steady_tick(Duration::from_millis(80));
+
+    // Fast path: blob already cached.
+    if cache.has_blob(&digest) {
+        pb.set_style(already_exists_style());
+        pb.finish_with_message("Already exists");
+        return Ok(());
+    }
+
+    // Stream the blob through a ProgressWriter so every chunk advances the bar.
+    let mut writer = ProgressWriter::new(pb.clone());
     client
         .pull_blob(image_ref, descriptor, &mut writer)
         .await
@@ -225,30 +213,56 @@ async fn download_blob(
         .flush()
         .await
         .context("flushing blob download buffer")?;
-    Ok(writer.into_inner())
-}
+    let raw = writer.into_inner();
 
-/// A minimal `tokio::io::AsyncWrite` impl that accumulates bytes into a Vec.
-struct AsyncVecWriter {
-    buf: Vec<u8>,
-}
-
-impl AsyncVecWriter {
-    fn new() -> Self {
-        AsyncVecWriter { buf: Vec::new() }
+    // Verify digest before persisting.
+    let actual = crate::util::digest::sha256_digest(&raw);
+    if actual != digest {
+        pb.set_style(error_style());
+        pb.abandon_with_message("digest mismatch");
+        anyhow::bail!("digest mismatch: expected {}, got {}", digest, actual);
     }
+
+    cache
+        .store_blob(&raw)
+        .with_context(|| format!("storing blob {}", digest))?;
+
+    pb.set_style(pull_complete_style());
+    pb.finish_with_message("Pull complete");
+
+    Ok(())
+}
+
+// ── Progress-aware AsyncWrite sink ───────────────────────────────────────────
+
+/// An in-memory `AsyncWrite` that accumulates bytes into a `Vec<u8>` and
+/// increments a `ProgressBar` by the number of bytes written in each chunk.
+struct ProgressWriter {
+    buf: Vec<u8>,
+    pb: ProgressBar,
+}
+
+impl ProgressWriter {
+    fn new(pb: ProgressBar) -> Self {
+        ProgressWriter {
+            buf: Vec::new(),
+            pb,
+        }
+    }
+
     fn into_inner(self) -> Vec<u8> {
         self.buf
     }
 }
 
-impl tokio::io::AsyncWrite for AsyncVecWriter {
+impl tokio::io::AsyncWrite for ProgressWriter {
     fn poll_write(
         mut self: std::pin::Pin<&mut Self>,
         _cx: &mut std::task::Context<'_>,
         buf: &[u8],
     ) -> std::task::Poll<std::io::Result<usize>> {
         self.buf.extend_from_slice(buf);
+        self.pb.inc(buf.len() as u64);
         std::task::Poll::Ready(Ok(buf.len()))
     }
 
@@ -267,7 +281,17 @@ impl tokio::io::AsyncWrite for AsyncVecWriter {
     }
 }
 
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+/// Returns `"sha256:abc123456789"` (prefix + first 12 hex chars).
 fn short(digest: &str) -> String {
     let hex = digest.strip_prefix("sha256:").unwrap_or(digest);
     format!("sha256:{}", &hex[..hex.len().min(12)])
+}
+
+/// Returns just the first 12 hex chars of a digest (no `"sha256:"` prefix).
+/// Used as the progress-bar prefix to mirror Docker's layer ID display.
+fn short_hex(digest: &str) -> String {
+    let hex = digest.strip_prefix("sha256:").unwrap_or(digest);
+    hex[..hex.len().min(12)].to_string()
 }
