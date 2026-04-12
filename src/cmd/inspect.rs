@@ -67,7 +67,7 @@ fn inspect_oci_dir(original_ref: &str, dir: &Path) -> Result<()> {
     if !dir.exists() {
         bail!(
             "OCI layout directory not found: {}\n\
-             Hint: run `bundle export <dir>` to create one.",
+             Hint: run `bundle build -t image:tag` to create one.",
             dir.display()
         );
     }
