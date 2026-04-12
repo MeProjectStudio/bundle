@@ -49,6 +49,14 @@ pub async fn run(args: PushArgs) -> Result<()> {
                     args.image_ref,
                 );
             }
+            if !tag.contains(':') {
+                anyhow::bail!(
+                    "local tag '{}' must include a name and a tag separated by ':', \
+                     e.g. '{}:latest'",
+                    tag,
+                    tag,
+                );
+            }
             log!("source: local tag '{}'", tag);
             cache
                 .load_local_image_by_tag(tag)

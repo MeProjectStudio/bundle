@@ -78,9 +78,11 @@ enum Commands {
 
         /// Tag the built image. May be repeated.
         ///
-        /// Bare names (no registry hostname) are stored as local tags and
-        /// can be referenced directly in bundle.toml without a registry:
-        ///   -t myplugin:latest
+        /// Local tags (no registry hostname) are stored in the local cache and
+        /// can be referenced directly in bundle.toml without a registry.
+        /// A colon separator is required — bare single-word names are rejected:
+        ///   -t myplugin:latest      valid local tag
+        ///   -t myplugin             invalid — must include :tag
         ///
         /// Names with a registry hostname are pushed to that registry:
         ///   -t ghcr.io/org/plugin:latest
@@ -603,13 +605,12 @@ mod tests {
     }
 
     #[test]
-    fn cli_build_bare_local_tag_parses() {
-        // Bare names (no registry hostname) are local-only tags — they must be
-        // accepted by the CLI and NOT rejected at parse time.
+    fn cli_build_local_tag_with_colon_parses() {
+        // name:tag form is the required format for local tags.
         let cli = Cli::try_parse_from(["bundle", "build", "-t", "myplugin:latest"]);
         assert!(
             cli.is_ok(),
-            "bare local tag should be accepted by the CLI: {:?}",
+            "local tag with colon should be accepted by the CLI: {:?}",
             cli
         );
         if let Ok(Cli {
@@ -617,6 +618,24 @@ mod tests {
         }) = cli
         {
             assert_eq!(tag, vec!["myplugin:latest".to_string()]);
+        }
+    }
+
+    #[test]
+    fn cli_build_local_tag_without_colon_parses_but_runtime_rejects() {
+        // The CLI parser accepts any string for -t; the colon requirement is
+        // enforced in cmd::build::run(), not at parse time.
+        let cli = Cli::try_parse_from(["bundle", "build", "-t", "myplugin"]);
+        assert!(
+            cli.is_ok(),
+            "CLI parsing must succeed even for a no-colon tag; \
+             runtime validation in cmd::build::run() rejects it"
+        );
+        if let Ok(Cli {
+            command: Commands::Build { tag, .. },
+        }) = cli
+        {
+            assert_eq!(tag, vec!["myplugin".to_string()]);
         }
     }
 

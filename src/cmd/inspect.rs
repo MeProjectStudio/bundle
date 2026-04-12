@@ -26,6 +26,14 @@ pub async fn run(image: String) -> Result<()> {
     } else if has_explicit_registry(&image) {
         inspect_remote(&image).await
     } else {
+        if !image.contains(':') {
+            bail!(
+                "local tag '{}' must include a name and a tag separated by ':', \
+                 e.g. '{}:latest'",
+                image,
+                image,
+            );
+        }
         inspect_local_tag(&image)
     }
 }

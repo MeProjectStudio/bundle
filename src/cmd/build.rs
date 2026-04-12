@@ -50,6 +50,13 @@ pub async fn run(args: BuildArgs) -> Result<()> {
             parse_ref(tag).with_context(|| format!("invalid tag: '{}'", tag))?;
         } else if tag.is_empty() {
             anyhow::bail!("tag must not be empty");
+        } else if !tag.contains(':') {
+            anyhow::bail!(
+                "local tag '{}' must include a name and a tag separated by ':', \
+                 e.g. '{}:latest'",
+                tag,
+                tag,
+            );
         }
     }
 
