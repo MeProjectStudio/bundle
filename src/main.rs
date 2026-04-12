@@ -131,6 +131,20 @@ enum Commands {
         dest: Option<String>,
     },
 
+    /// Inspect a bundle image — shows layers, labels, and managed config keys.
+    ///
+    /// Accepts three source forms:
+    ///
+    ///   ghcr.io/org/plugin:tag    remote OCI registry
+    ///   oci:./path/to/dir         local OCI Image Layout directory
+    ///   myplugin:latest           local tag  (built with `bundle build -t NAME`)
+    Inspect {
+        /// Image to inspect: a registry reference, an `oci:` local directory
+        /// prefix, or a bare local tag name.
+        #[arg(value_name = "IMAGE", value_hint = ValueHint::Other)]
+        image: String,
+    },
+
     /// Manage OCI bundles on a Minecraft server (pull, apply, run).
     #[command(subcommand)]
     Server(ServerCommands),
@@ -284,6 +298,12 @@ async fn run() -> Result<()> {
             })
             .await
             .context("bundle push failed")?;
+        }
+
+        Commands::Inspect { image } => {
+            cmd::inspect::run(image)
+                .await
+                .context("bundle inspect failed")?;
         }
 
         Commands::Server(server_cmd) => match server_cmd {
@@ -663,6 +683,50 @@ mod tests {
             assert_eq!(source_or_dest, "myplugin:latest");
             assert_eq!(dest, Some("ghcr.io/me/myplugin:1.0".to_string()));
         }
+    }
+
+    // ── inspect ───────────────────────────────────────────────────────────────
+
+    #[test]
+    fn cli_inspect_registry_ref_parses() {
+        let cli = Cli::try_parse_from(["bundle", "inspect", "ghcr.io/org/plugin:latest"]);
+        assert!(cli.is_ok(), "registry ref should parse: {:?}", cli);
+        if let Ok(Cli {
+            command: Commands::Inspect { image },
+        }) = cli
+        {
+            assert_eq!(image, "ghcr.io/org/plugin:latest");
+        }
+    }
+
+    #[test]
+    fn cli_inspect_local_tag_parses() {
+        let cli = Cli::try_parse_from(["bundle", "inspect", "myplugin:latest"]);
+        assert!(cli.is_ok(), "bare local tag should parse: {:?}", cli);
+        if let Ok(Cli {
+            command: Commands::Inspect { image },
+        }) = cli
+        {
+            assert_eq!(image, "myplugin:latest");
+        }
+    }
+
+    #[test]
+    fn cli_inspect_oci_dir_parses() {
+        let cli = Cli::try_parse_from(["bundle", "inspect", "oci:./output"]);
+        assert!(cli.is_ok(), "oci: dir ref should parse: {:?}", cli);
+        if let Ok(Cli {
+            command: Commands::Inspect { image },
+        }) = cli
+        {
+            assert_eq!(image, "oci:./output");
+        }
+    }
+
+    #[test]
+    fn cli_inspect_requires_image_arg() {
+        let cli = Cli::try_parse_from(["bundle", "inspect"]);
+        assert!(cli.is_err(), "inspect without an argument must fail");
     }
 
     #[test]

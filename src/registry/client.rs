@@ -306,6 +306,18 @@ impl McpmRegistryClient {
         cache.store_blob(&raw)?;
         Ok(())
     }
+
+    /// Fetch a single blob by descriptor and return its raw bytes.
+    ///
+    /// Thin `pub(crate)` wrapper around the private `pull_blob_to_vec` helper,
+    /// used by `bundle inspect` to fetch image config without caching to disk.
+    pub(crate) async fn pull_blob_bytes(
+        &self,
+        image_ref: &str,
+        descriptor: &Descriptor,
+    ) -> Result<Vec<u8>> {
+        pull_blob_to_vec(self, image_ref, descriptor).await
+    }
 }
 
 impl Default for McpmRegistryClient {

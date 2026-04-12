@@ -86,7 +86,16 @@ impl StreamingHasher {
             bytes_written: 0,
         }
     }
+}
 
+impl Default for StreamingHasher {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[allow(dead_code)]
+impl StreamingHasher {
     pub fn update(&mut self, data: &[u8]) {
         sha2::Digest::update(&mut self.inner, data);
         self.bytes_written += data.len() as u64;

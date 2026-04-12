@@ -551,78 +551,100 @@ fn parse_flags(tokens: &[&str]) -> Result<(HashMap<String, String>, Vec<String>)
     Ok((flags, positional))
 }
 
-/// Return a mutable reference to the most recently pushed stage.
-///
-/// Fails with an actionable error when a directive appears before any `FROM`.
 /// Parse a `LABEL` line into key=value pairs.
 ///
 /// Supports:
 /// - `key=value`
 /// - `key="value with spaces"`
-/// - `key1=val1 key2=val2` (multiple per line)
+/// - `key1=val1 key2=val2` (multiple pairs on one line)
+/// - Unquoted multi-word values: `key=hello world` → `{key: "hello world"}`
+///   An unquoted value ends only when the next whitespace-separated token
+///   contains `=` at a non-zero position (indicating a new key=value pair).
 /// - Backslash escapes inside quoted values
 fn parse_label_pairs(s: &str) -> Result<std::collections::HashMap<String, String>> {
     let mut result = std::collections::HashMap::new();
-    let mut chars = s.char_indices().peekable();
+    let mut rem = s;
 
     loop {
-        // Skip whitespace between pairs.
-        while chars
-            .peek()
-            .map(|(_, c)| c.is_whitespace())
-            .unwrap_or(false)
-        {
-            chars.next();
-        }
-        if chars.peek().is_none() {
+        // Skip leading whitespace.
+        rem = rem.trim_start();
+        if rem.is_empty() {
             break;
         }
 
-        // Read key (up to '=').
-        let mut key = String::new();
-        loop {
-            match chars.peek() {
-                None | Some((_, '=')) => {
-                    chars.next();
-                    break;
-                }
-                Some((_, c)) if c.is_whitespace() => break,
-                Some((_, c)) => {
-                    key.push(*c);
-                    chars.next();
-                }
-            }
+        // ── key ──────────────────────────────────────────────────────────────
+        // The key is everything before the first `=`.  The portion before `=`
+        // must not contain whitespace (which would mean a bare word with no
+        // value slipped in, which is invalid LABEL syntax).
+        let eq_pos = match rem.find('=') {
+            Some(p) => p,
+            None => bail!("LABEL: missing '=' in '{}'", rem.trim()),
+        };
+        let key_str = &rem[..eq_pos];
+        if key_str.contains(char::is_whitespace) {
+            bail!(
+                "LABEL: key '{}' must not contain spaces; \
+                 quote values that contain spaces: key=\"value with spaces\"",
+                key_str.trim()
+            );
         }
-        if key.is_empty() {
-            break;
-        }
+        let key = key_str.to_string();
+        rem = &rem[eq_pos + 1..]; // consume key and '='
 
-        // Read value — quoted or unquoted.
-        let value = if chars.peek().map(|(_, c)| *c == '"').unwrap_or(false) {
-            chars.next(); // consume opening '"'
+        // ── value ─────────────────────────────────────────────────────────────
+        let value = if rem.starts_with('"') {
+            // Quoted value — scan to the matching closing `"`, honouring `\`.
+            rem = &rem[1..]; // skip opening '"'
             let mut v = String::new();
+            let mut consumed = 0usize;
+            let mut chars = rem.chars();
             loop {
                 match chars.next() {
-                    None | Some((_, '"')) => break,
-                    Some((_, '\\')) => {
-                        if let Some((_, escaped)) = chars.next() {
-                            v.push(escaped);
+                    None => break,
+                    Some('"') => {
+                        consumed += '"'.len_utf8();
+                        break;
+                    }
+                    Some('\\') => {
+                        consumed += '\\'.len_utf8();
+                        if let Some(c) = chars.next() {
+                            v.push(c);
+                            consumed += c.len_utf8();
                         }
                     }
-                    Some((_, c)) => v.push(c),
+                    Some(c) => {
+                        v.push(c);
+                        consumed += c.len_utf8();
+                    }
                 }
             }
+            rem = &rem[consumed.min(rem.len())..];
             v
         } else {
-            let mut v = String::new();
-            while chars
-                .peek()
-                .map(|(_, c)| !c.is_whitespace())
-                .unwrap_or(false)
-            {
-                v.push(chars.next().unwrap().1);
+            // Unquoted value — consume whitespace-separated words until we
+            // encounter a word that contains `=` at a non-zero position, which
+            // signals the start of the next key=value pair.
+            //
+            // Example:  key=hello world  →  value = "hello world"
+            // Example:  k1=a k2=b        →  value of k1 = "a", then k2=b
+            let mut parts: Vec<&str> = Vec::new();
+            loop {
+                let t = rem.trim_start();
+                if t.is_empty() {
+                    rem = t;
+                    break;
+                }
+                let word_len = t.find(char::is_whitespace).unwrap_or(t.len());
+                let word = &t[..word_len];
+                // A word with '=' at position > 0 starts a new pair — stop.
+                if matches!(word.find('='), Some(p) if p > 0) {
+                    rem = t;
+                    break;
+                }
+                parts.push(word);
+                rem = &t[word_len..];
             }
-            v
+            parts.join(" ")
         };
 
         result.insert(key, value);
@@ -631,6 +653,9 @@ fn parse_label_pairs(s: &str) -> Result<std::collections::HashMap<String, String
     Ok(result)
 }
 
+/// Return a mutable reference to the most recently pushed stage.
+///
+/// Fails with an actionable error when a directive appears before any `FROM`.
 fn current_stage_mut(stages: &mut [Stage], lineno: usize) -> Result<&mut Stage> {
     stages
         .last_mut()
@@ -939,6 +964,58 @@ mod tests {
         assert_eq!(
             bf.stages[0].labels.get("key").map(String::as_str),
             Some("second")
+        );
+    }
+
+    #[test]
+    fn label_unquoted_value_with_spaces() {
+        // Unquoted value that spans multiple words must be captured whole.
+        let src = "FROM scratch\nLABEL description=hello world foo bar\n";
+        let bf = parse(src, &no_overrides()).unwrap();
+        assert_eq!(
+            bf.stages[0].labels.get("description").map(String::as_str),
+            Some("hello world foo bar"),
+            "unquoted multi-word value must not be split into separate labels"
+        );
+        // The words must NOT appear as separate bare keys.
+        assert!(
+            !bf.stages[0].labels.contains_key("hello"),
+            "'hello' must not be a label key"
+        );
+    }
+
+    #[test]
+    fn label_arg_substituted_multiword_value() {
+        // The motivating real-world case: an ARG whose value contains spaces
+        // is substituted into a LABEL and must not be word-split.
+        let src = concat!(
+            "ARG DESC=mcmetrics-exporter for Velocity\n",
+            "FROM scratch\n",
+            "LABEL org.opencontainers.image.description=${DESC}\n",
+        );
+        let bf = parse(src, &no_overrides()).unwrap();
+        assert_eq!(
+            bf.stages[0]
+                .labels
+                .get("org.opencontainers.image.description")
+                .map(String::as_str),
+            Some("mcmetrics-exporter for Velocity"),
+        );
+    }
+
+    #[test]
+    fn label_multiword_value_stops_at_next_key() {
+        // When two pairs are on the same line the second key= boundary must
+        // end the first value, even if the first value has multiple words.
+        let src = "FROM scratch\nLABEL a=hello world b=there\n";
+        let bf = parse(src, &no_overrides()).unwrap();
+        assert_eq!(
+            bf.stages[0].labels.get("a").map(String::as_str),
+            Some("hello world")
+        );
+        assert_eq!(
+            bf.stages[0].labels.get("b").map(String::as_str),
+            Some("there")
         );
     }
 
