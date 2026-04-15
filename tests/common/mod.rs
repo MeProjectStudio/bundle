@@ -4,6 +4,7 @@ use std::fs;
 use std::path::Path;
 
 /// Write `content` to `base/relative_path`, creating all parent directories.
+#[allow(dead_code)]
 pub fn write_file(base: &Path, relative_path: &str, content: &[u8]) {
     let full = base.join(relative_path);
     if let Some(parent) = full.parent() {
