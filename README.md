@@ -1,6 +1,4 @@
 # bundle
-[![FOSSA Status](https://app.fossa.com/api/projects/git%2Bgithub.com%2FMeProjectStudio%2Fbundle.svg?type=shield)](https://app.fossa.com/projects/git%2Bgithub.com%2FMeProjectStudio%2Fbundle?ref=badge_shield)
-
 
 Declarative mod management for Minecraft servers using OCI images.
 
@@ -153,7 +151,3 @@ bundle server run                pull + apply + exec the server process
 bundle version                   Print version, target, and git revision
 bundle selfupdate                Update the bundle binary to the latest release
 ```
-
-
-## License
-[![FOSSA Status](https://app.fossa.com/api/projects/git%2Bgithub.com%2FMeProjectStudio%2Fbundle.svg?type=large)](https://app.fossa.com/projects/git%2Bgithub.com%2FMeProjectStudio%2Fbundle?ref=badge_large)
