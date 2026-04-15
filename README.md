@@ -5,6 +5,64 @@ Declarative mod management for Minecraft servers using OCI images.
 Define your plugins in a `Bundlefile`, build them into standard OCI images, push to any
 registry, and let `bundle` keep your server in sync.
 
+
+## Hold on, what's this for again?
+
+It's hard to manage your plugins and mods for a server when there is like 50 of them. We decided to borrow from docker-compose and build a tool that allows to distribute your plugins using OCI-compaint images.
+
+So you can define what mods and servers to install using this in root of your server:
+```toml
+bundles = [
+  "ghcr.io/realkarmakun/mcmetrics-exporter-velocity:0.5.0"
+  "ghcr.io/luckperms/luckperms:^5",
+  "example.com/someotherauthor/coolplugin:latest",
+]
+```
+
+Then you run your server using `bundle server run` and it will pull mentioned versions and apply images to file system as author of a bundle intended.
+
+This brings image's reproducability and enforces docker versioning flavor upon plugins. 
+
+## Cool I guess, but how are they distributed?
+
+When author builds their image they make `Bundlefile` which has syntax similar to `Dockerfile`. 
+
+Then using `bundle build` and `bundle push` an OCI image is built and it can be pushed to Github Packages, self-hosted solution (e.g. Harbor), or even DockerHub!
+
+So any author that wants to make their plugin accessible through `bundle` can easily do so. Storage is basically free.
+
+So if you just a server admin, you don't need some central server or orchestrator. Just use same config.
+
+## Woah, but my <some plugin> doesn't support bundle
+
+That's not a problem! Many programs don't have official docker image. 
+
+Feel free write some CI/CD scripts, to download and build your own `Bundlefile`. As nice bonus you can even include not only just a jar but multiple plugins. 
+
+It's your bundle for your server after all. (You would need a private registry though. For security)
+
+## What else does it do?
+
+It also manages your server startup:
+
+```toml
+bundles = [
+  "ghcr.io/realkarmakun/mcmetrics-exporter-velocity:0.5.0"
+  "ghcr.io/luckperms/luckperms:^5",
+  "example.com/someotherauthor/coolplugin:latest",
+]
+
+[server]
+run = ["java", "-Xms128M", "-Xmx5G", "-jar", "velocity.jar"]
+
+deny-override = ["bundle", "bundle.exe", "bundle.lock", "bundle.toml", "server.jar"]
+```
+
+So single `bundle server run` will:
+1. Pull images mentioned in bundles. If image is already in cache it will not be pulled (this can be done with `bundle server pull`)
+2. Apply images to file system, can be done with `bundle server apply`. Take notice of `server.deny-override`, it's a list of files that bundles can not override. 
+3. Run command from `server.run` and run the server with updated plugins
+
 ---
 
 ## Installation
@@ -122,7 +180,7 @@ ADD  ./config/sodium/                 config/sodium/
 
 ---
 
-## Config ownership with MANAGE
+## Config ownership with MANAGE (EXPERIMENTAL)
 
 `MANAGE` lets a bundle declare which keys it owns in a config file. On
 `bundle server apply`, declared keys are taken from the bundle; every other
