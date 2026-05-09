@@ -30,13 +30,13 @@ src/
     version.rs      – `bundle version`
   bundlefile/       – Parsing and types for the Bundlefile DSL
     parser.rs       – Tokenises and parses a Bundlefile into a `Bundlefile` struct
-    types.rs        – All AST types: Stage, AddDirective, CopyDirective, ManageDirective, …
+    types.rs        – All AST types: Stage, AddDirective, CopyDirective, PreserveDirective, …
   bundle/           – OCI image building
     build.rs        – Walks stages, resolves ADD/COPY sources, produces OCI layers
     layer.rs        – Low-level tar + gzip layer construction
     annotations.rs  – OCI annotation helpers
   apply/            – Applying a bundle to a live server directory
-    merge.rs        – Config key-merge logic (respects MANAGE ownership)
+    merge.rs        – Config key-merge logic (bundle wins by default; PRESERVE keys keep user's on-disk value)
     overlay.rs      – File overlay (copies layer contents onto server dir)
   project/          – Server-side project files
     config.rs       – `bundle.toml` read/write
@@ -74,7 +74,30 @@ Mirrors Dockerfile syntax. Supported directives:
 | `ADD [--checksum=sha256:<hex>] <src> <dest>` | Copy a local file/dir or download a URL into the layer. |
 | `COPY [--from=<index\|name>] <src> <dest>` | Copy from the build context or a previous stage. `src` may contain glob metacharacters (`*`, `?`, `[…]`, `**`). |
 | `LABEL <key>=<value> …` | Embed metadata in the OCI image config. |
-| `MANAGE <config-path>: <key>, …` | Declare config keys this bundle owns (for merge). |
+| `PRESERVE <config-path>: <key>, …` | Declare config keys the user may freely modify; bundle will not override them on apply. |
+
+#### PRESERVE semantics
+
+When `bundle server apply` encounters a config file that already exists on disk and the image carries a `PRESERVE` annotation for that path, a **format-aware merge** is performed:
+
+- **Bundle is the authoritative base** — its values win for every key by default.
+- **Preserved keys** (listed in the `PRESERVE` directive) keep the user's on-disk value unchanged.
+
+Key patterns support wildcards:
+
+| Pattern | Matches (YAML / TOML / JSON) |
+|---------|------------------------------|
+| `key` | exactly the key `key` |
+| `a.b` | the nested path `a → b` |
+| `a.*` | any single direct child of `a` (`a.foo`, `a.bar`, …) |
+| `a.**` | any descendant of `a` at any depth |
+| `**` | every key at every depth |
+
+For `.properties` (flat format) patterns use standard glob semantics where `*` matches any sequence of characters in the key name (including literal `.`), so `*` alone preserves every key and `plugin.*` preserves every key whose name starts with `plugin.`.
+
+Files **without** a `PRESERVE` annotation are always fully overwritten by the bundle version.
+
+For `.properties` files, keys present only on disk (user additions not known to the bundle) are appended at the end of the merged output regardless of the preserve list, so user-added entries are never silently dropped.
 
 Line continuations (`\`) and `#` comments are supported.
 
@@ -141,7 +164,7 @@ Bundle sources in `bundle.toml` can be:
 
 ### `bundle inspect`
 
-Displays layers, platform, labels, and MANAGE annotations for any image source:
+Displays layers, platform, labels, and PRESERVE annotations for any image source:
 
 ```
 bundle inspect ghcr.io/org/plugin:latest    # remote registry (pulls manifest + config)

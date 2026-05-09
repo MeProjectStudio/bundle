@@ -93,18 +93,19 @@ pub struct CopyDirective {
     pub dest: String,
 }
 
-// ── MANAGE ────────────────────────────────────────────────────────────────────
+// ── PRESERVE ──────────────────────────────────────────────────────────────────
 
-/// A single `MANAGE` directive — declares which config keys this bundle owns.
+/// A single `PRESERVE` directive — declares which config keys the user is allowed to modify freely.
 ///
 /// ```text
-/// MANAGE plugins/Essentials/config.yml: home.bed-respawn, homes.max-homes
+/// PRESERVE plugins/Essentials/config.yml: home.bed-respawn, homes.max-homes
 /// ```
 #[derive(Debug, Clone)]
-pub struct ManageDirective {
+pub struct PreserveDirective {
     /// Server-root-relative config file path (e.g. `plugins/Essentials/config.yml`).
     pub config_path: String,
-    /// Dot-separated key paths owned by this bundle (e.g. `["home.bed-respawn", "homes.max-homes"]`).
+    /// Dot-separated key paths (or glob patterns using `*` / `**`) the user may modify freely;
+    /// bundle will not override them on apply.
     pub keys: Vec<String>,
 }
 
@@ -119,7 +120,7 @@ pub struct Stage {
     pub name: Option<String>,
     pub adds: Vec<AddDirective>,
     pub copies: Vec<CopyDirective>,
-    pub manages: Vec<ManageDirective>,
+    pub preserves: Vec<PreserveDirective>,
     /// Key-value labels to embed in the OCI image config (`LABEL` directives).
     /// Later stages override earlier ones for the same key.
     pub labels: HashMap<String, String>,
@@ -132,7 +133,7 @@ impl Stage {
             name,
             adds: Vec::new(),
             copies: Vec::new(),
-            manages: Vec::new(),
+            preserves: Vec::new(),
             labels: HashMap::new(),
         }
     }

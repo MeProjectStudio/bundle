@@ -1,13 +1,34 @@
 //! Format-aware config file merging.
 //!
 //! When `bundle apply` encounters a config file that already exists on disk, it
-//! merges the on-disk version with the incoming bundle version:
+//! merges the on-disk version with the incoming bundle version.  The bundle is
+//! the authoritative source: its values win for every key by default.  Keys
+//! declared in a `PRESERVE` directive are the exception — for those, the
+//! user's on-disk value is kept unchanged.
 //!
-//! - **Managed keys** (declared via `MANAGE` in the Bundlefile, stored in the
-//!   OCI image `bundle.managed-keys` annotation): bundle's value wins.
-//! - **All other keys**: on-disk value is kept unchanged.
+//! - **All keys by default**: bundle's value wins (on-disk value replaced).
+//! - **Preserved keys** (declared via `PRESERVE` in the Bundlefile, stored in
+//!   the OCI image `bundle.preserve-keys` annotation): user's on-disk value
+//!   is kept unchanged.
 //!
-//! Supported formats (detected by file extension):
+//! ## Preserve patterns
+//!
+//! Keys in a `PRESERVE` directive may be exact paths or glob-style patterns:
+//!
+//! | Pattern   | Matches (YAML / TOML / JSON)                        |
+//! |-----------|-----------------------------------------------------|
+//! | `key`     | exactly the key `key`                               |
+//! | `a.b`     | the nested path `a → b`                             |
+//! | `a.*`     | `a.foo`, `a.bar`, … (any single child of `a`)       |
+//! | `a.**`    | `a.foo`, `a.foo.bar`, … (any descendant of `a`)     |
+//! | `**`      | every key at every depth                            |
+//!
+//! For `.properties` (flat format) patterns use standard glob semantics:
+//! `*` matches any sequence of characters in the key name (including `.`),
+//! so `*` alone preserves every key.  The dot is part of the key name, not
+//! a path separator.
+//!
+//! ## Supported formats
 //!
 //! | Extension(s)      | Parser / serialiser   |
 //! |-------------------|-----------------------|
@@ -21,13 +42,11 @@
 //!
 //! ## Key path convention
 //!
-//! For YAML / TOML / JSON a managed key like `homes.max-homes` is a
-//! **dot-separated path** into the value tree: navigate into the `homes`
-//! mapping and set the `max-homes` leaf.
+//! For YAML / TOML / JSON a key path like `homes.max-homes` is a
+//! **dot-separated path** into the value tree.
 //!
-//! For `.properties` the managed key is the **literal property key** (the dot
-//! is part of the key name, not a path separator), because `.properties` is a
-//! flat format with no nesting.
+//! For `.properties` the key is the **literal property key** (the dot is part
+//! of the key name, not a path separator).
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -36,8 +55,9 @@ use anyhow::{Context, Result};
 
 /// Merge `on_disk` and `from_bundle` bytes, returning the merged bytes.
 ///
-/// `managed_keys` is a list of dot-separated key paths (or literal property
-/// keys for `.properties`) that should take their value from the bundle.
+/// `preserve_keys` is a list of dot-separated key paths (or glob patterns)
+/// whose on-disk values should be kept unchanged.  All other keys take the
+/// bundle's value.
 ///
 /// `path` is used only to detect the config format via its extension.
 ///
@@ -46,15 +66,15 @@ use anyhow::{Context, Result};
 pub fn merge_config(
     on_disk: &[u8],
     from_bundle: &[u8],
-    managed_keys: &[String],
+    preserve_keys: &[String],
     path: &Path,
 ) -> Result<Option<Vec<u8>>> {
     match detect_format(path) {
-        Some(ConfigFormat::Yaml) => merge_yaml(on_disk, from_bundle, managed_keys).map(Some),
-        Some(ConfigFormat::Toml) => merge_toml(on_disk, from_bundle, managed_keys).map(Some),
-        Some(ConfigFormat::Json) => merge_json(on_disk, from_bundle, managed_keys).map(Some),
+        Some(ConfigFormat::Yaml) => merge_yaml(on_disk, from_bundle, preserve_keys).map(Some),
+        Some(ConfigFormat::Toml) => merge_toml(on_disk, from_bundle, preserve_keys).map(Some),
+        Some(ConfigFormat::Json) => merge_json(on_disk, from_bundle, preserve_keys).map(Some),
         Some(ConfigFormat::Properties) => {
-            merge_properties(on_disk, from_bundle, managed_keys).map(Some)
+            merge_properties(on_disk, from_bundle, preserve_keys).map(Some)
         }
         None => Ok(None),
     }
@@ -79,29 +99,124 @@ pub fn detect_format(path: &Path) -> Option<ConfigFormat> {
     }
 }
 
-fn merge_yaml(on_disk: &[u8], from_bundle: &[u8], managed_keys: &[String]) -> Result<Vec<u8>> {
+// ── Pattern matching ──────────────────────────────────────────────────────────
+
+/// Return `true` if the dot-joined `path` matches any of the `patterns`.
+///
+/// Used for structured formats (YAML / TOML / JSON) where paths are
+/// dot-separated sequences of key names.
+fn path_matches_any(path: &str, patterns: &[String]) -> bool {
+    if patterns.is_empty() {
+        return false;
+    }
+    let path_segs: Vec<&str> = path.split('.').collect();
+    patterns.iter().any(|pattern| {
+        let pat_segs: Vec<&str> = pattern.split('.').collect();
+        segs_match(&path_segs, &pat_segs)
+    })
+}
+
+/// Segment-by-segment recursive matcher.
+///
+/// - A literal segment matches only the identical segment.
+/// - `*` matches any single segment.
+/// - `**` matches zero or more consecutive segments.
+fn segs_match(path: &[&str], pattern: &[&str]) -> bool {
+    if pattern.is_empty() {
+        return path.is_empty();
+    }
+    if pattern[0] == "**" {
+        let rest = &pattern[1..];
+        // Try consuming 0, 1, 2, … path segments with **.
+        for i in 0..=path.len() {
+            if segs_match(&path[i..], rest) {
+                return true;
+            }
+        }
+        return false;
+    }
+    if path.is_empty() {
+        return false;
+    }
+    if pattern[0] == "*" || pattern[0] == path[0] {
+        segs_match(&path[1..], &pattern[1..])
+    } else {
+        false
+    }
+}
+
+/// Return `true` if the flat `.properties` `key` matches any of the `patterns`.
+///
+/// Uses standard glob semantics via the `glob` crate.  Since `.properties`
+/// keys have no nesting, `*` matches any sequence of characters (including
+/// the literal `.` that appears in many Java property key names).
+fn properties_key_matches_any(key: &str, patterns: &[String]) -> bool {
+    let opts = glob::MatchOptions {
+        case_sensitive: true,
+        require_literal_separator: false,
+        require_literal_leading_dot: false,
+    };
+    patterns.iter().any(|pattern| {
+        glob::Pattern::new(pattern)
+            .map(|p| p.matches_with(key, opts))
+            .unwrap_or(false)
+    })
+}
+
+// ── YAML ──────────────────────────────────────────────────────────────────────
+
+/// Bundle-based YAML merge.
+///
+/// The result starts as the bundle document.  For every leaf path in the
+/// on-disk document that matches a preserve pattern, the disk value is
+/// written back into the result.
+fn merge_yaml(on_disk: &[u8], from_bundle: &[u8], preserve_keys: &[String]) -> Result<Vec<u8>> {
     let disk_str = std::str::from_utf8(on_disk).context("on-disk YAML is not valid UTF-8")?;
     let bundle_str = std::str::from_utf8(from_bundle).context("bundle YAML is not valid UTF-8")?;
 
-    let mut disk_val: serde_yaml::Value =
+    let disk_val: serde_yaml::Value =
         serde_yaml::from_str(disk_str).context("parsing on-disk YAML")?;
-    let bundle_val: serde_yaml::Value =
+    let mut result_val: serde_yaml::Value =
         serde_yaml::from_str(bundle_str).context("parsing bundle YAML")?;
 
-    for key_path in managed_keys {
-        let segments: Vec<&str> = key_path.split('.').collect();
-        if let Some(bundle_leaf) = get_yaml_nested(&bundle_val, &segments) {
-            set_yaml_nested(&mut disk_val, &segments, bundle_leaf.clone());
+    // For each leaf in the on-disk document: if its path matches a preserve
+    // pattern, overwrite the bundle-seeded result with the disk value.
+    for segments in collect_yaml_leaf_paths(&disk_val, &[]) {
+        let path_str = segments.join(".");
+        if path_matches_any(&path_str, preserve_keys) {
+            let seg_refs: Vec<&str> = segments.iter().map(String::as_str).collect();
+            if let Some(disk_leaf) = get_yaml_nested(&disk_val, &seg_refs) {
+                set_yaml_nested(&mut result_val, &seg_refs, disk_leaf.clone());
+            }
         }
-        // If the bundle doesn't have the managed key, the on-disk value is
-        // preserved unchanged.
     }
 
-    let out = serde_yaml::to_string(&disk_val).context("serialising merged YAML")?;
+    let out = serde_yaml::to_string(&result_val).context("serialising merged YAML")?;
     Ok(out.into_bytes())
 }
 
-/// Recursively navigate into `val` following the dot-split `path`.
+/// Enumerate every leaf path in a YAML value tree.
+///
+/// Each returned `Vec<String>` is the sequence of key names leading to one
+/// scalar (or non-mapping) node.  Intermediate mapping nodes are not included.
+fn collect_yaml_leaf_paths(val: &serde_yaml::Value, prefix: &[String]) -> Vec<Vec<String>> {
+    if let serde_yaml::Value::Mapping(map) = val {
+        let mut paths = Vec::new();
+        for (k, v) in map {
+            if let serde_yaml::Value::String(key) = k {
+                let mut new_prefix = prefix.to_vec();
+                new_prefix.push(key.clone());
+                paths.extend(collect_yaml_leaf_paths(v, &new_prefix));
+            }
+        }
+        paths
+    } else if prefix.is_empty() {
+        vec![]
+    } else {
+        vec![prefix.to_vec()]
+    }
+}
+
 fn get_yaml_nested<'a>(val: &'a serde_yaml::Value, path: &[&str]) -> Option<&'a serde_yaml::Value> {
     if path.is_empty() {
         return Some(val);
@@ -115,15 +230,12 @@ fn get_yaml_nested<'a>(val: &'a serde_yaml::Value, path: &[&str]) -> Option<&'a 
     }
 }
 
-/// Set a leaf deep inside `val` at `path`, creating intermediate mappings if
-/// required.
 fn set_yaml_nested(val: &mut serde_yaml::Value, path: &[&str], new_val: serde_yaml::Value) {
     if path.is_empty() {
         *val = new_val;
         return;
     }
 
-    // Coerce non-mapping nodes to mappings so we can descend into them.
     if !val.is_mapping() {
         *val = serde_yaml::Value::Mapping(serde_yaml::Mapping::new());
     }
@@ -141,22 +253,43 @@ fn set_yaml_nested(val: &mut serde_yaml::Value, path: &[&str], new_val: serde_ya
     }
 }
 
-fn merge_toml(on_disk: &[u8], from_bundle: &[u8], managed_keys: &[String]) -> Result<Vec<u8>> {
+// ── TOML ──────────────────────────────────────────────────────────────────────
+
+fn merge_toml(on_disk: &[u8], from_bundle: &[u8], preserve_keys: &[String]) -> Result<Vec<u8>> {
     let disk_str = std::str::from_utf8(on_disk).context("on-disk TOML is not valid UTF-8")?;
     let bundle_str = std::str::from_utf8(from_bundle).context("bundle TOML is not valid UTF-8")?;
 
-    let mut disk_val: toml::Value = toml::from_str(disk_str).context("parsing on-disk TOML")?;
-    let bundle_val: toml::Value = toml::from_str(bundle_str).context("parsing bundle TOML")?;
+    let disk_val: toml::Value = toml::from_str(disk_str).context("parsing on-disk TOML")?;
+    let mut result_val: toml::Value = toml::from_str(bundle_str).context("parsing bundle TOML")?;
 
-    for key_path in managed_keys {
-        let segments: Vec<&str> = key_path.split('.').collect();
-        if let Some(bundle_leaf) = get_toml_nested(&bundle_val, &segments) {
-            set_toml_nested(&mut disk_val, &segments, bundle_leaf.clone());
+    for segments in collect_toml_leaf_paths(&disk_val, &[]) {
+        let path_str = segments.join(".");
+        if path_matches_any(&path_str, preserve_keys) {
+            let seg_refs: Vec<&str> = segments.iter().map(String::as_str).collect();
+            if let Some(disk_leaf) = get_toml_nested(&disk_val, &seg_refs) {
+                set_toml_nested(&mut result_val, &seg_refs, disk_leaf.clone());
+            }
         }
     }
 
-    let out = toml::to_string_pretty(&disk_val).context("serialising merged TOML")?;
+    let out = toml::to_string_pretty(&result_val).context("serialising merged TOML")?;
     Ok(out.into_bytes())
+}
+
+fn collect_toml_leaf_paths(val: &toml::Value, prefix: &[String]) -> Vec<Vec<String>> {
+    if let toml::Value::Table(table) = val {
+        let mut paths = Vec::new();
+        for (k, v) in table {
+            let mut new_prefix = prefix.to_vec();
+            new_prefix.push(k.clone());
+            paths.extend(collect_toml_leaf_paths(v, &new_prefix));
+        }
+        paths
+    } else if prefix.is_empty() {
+        vec![]
+    } else {
+        vec![prefix.to_vec()]
+    }
 }
 
 fn get_toml_nested<'a>(val: &'a toml::Value, path: &[&str]) -> Option<&'a toml::Value> {
@@ -193,23 +326,44 @@ fn set_toml_nested(val: &mut toml::Value, path: &[&str], new_val: toml::Value) {
     }
 }
 
-fn merge_json(on_disk: &[u8], from_bundle: &[u8], managed_keys: &[String]) -> Result<Vec<u8>> {
+// ── JSON ──────────────────────────────────────────────────────────────────────
+
+fn merge_json(on_disk: &[u8], from_bundle: &[u8], preserve_keys: &[String]) -> Result<Vec<u8>> {
     let disk_str = std::str::from_utf8(on_disk).context("on-disk JSON is not valid UTF-8")?;
     let bundle_str = std::str::from_utf8(from_bundle).context("bundle JSON is not valid UTF-8")?;
 
-    let mut disk_val: serde_json::Value =
+    let disk_val: serde_json::Value =
         serde_json::from_str(disk_str).context("parsing on-disk JSON")?;
-    let bundle_val: serde_json::Value =
+    let mut result_val: serde_json::Value =
         serde_json::from_str(bundle_str).context("parsing bundle JSON")?;
 
-    for key_path in managed_keys {
-        let segments: Vec<&str> = key_path.split('.').collect();
-        if let Some(bundle_leaf) = get_json_nested(&bundle_val, &segments) {
-            set_json_nested(&mut disk_val, &segments, bundle_leaf.clone());
+    for segments in collect_json_leaf_paths(&disk_val, &[]) {
+        let path_str = segments.join(".");
+        if path_matches_any(&path_str, preserve_keys) {
+            let seg_refs: Vec<&str> = segments.iter().map(String::as_str).collect();
+            if let Some(disk_leaf) = get_json_nested(&disk_val, &seg_refs) {
+                set_json_nested(&mut result_val, &seg_refs, disk_leaf.clone());
+            }
         }
     }
 
-    serde_json::to_vec_pretty(&disk_val).context("serialising merged JSON")
+    serde_json::to_vec_pretty(&result_val).context("serialising merged JSON")
+}
+
+fn collect_json_leaf_paths(val: &serde_json::Value, prefix: &[String]) -> Vec<Vec<String>> {
+    if let serde_json::Value::Object(map) = val {
+        let mut paths = Vec::new();
+        for (k, v) in map {
+            let mut new_prefix = prefix.to_vec();
+            new_prefix.push(k.clone());
+            paths.extend(collect_json_leaf_paths(v, &new_prefix));
+        }
+        paths
+    } else if prefix.is_empty() {
+        vec![]
+    } else {
+        vec![prefix.to_vec()]
+    }
 }
 
 fn get_json_nested<'a>(val: &'a serde_json::Value, path: &[&str]) -> Option<&'a serde_json::Value> {
@@ -246,32 +400,35 @@ fn set_json_nested(val: &mut serde_json::Value, path: &[&str], new_val: serde_js
     }
 }
 
+// ── .properties ───────────────────────────────────────────────────────────────
+
 /// Java `.properties` merge.
 ///
-/// The format is a flat key=value file — there is no nesting.  A managed key
-/// like `home.bed-respawn` is the *literal* property key; the dot is part of
-/// the key name.
+/// The format is a flat key=value file — there is no nesting.  A preserve
+/// pattern like `home.bed-respawn` is matched against the *literal* property
+/// key; the dot is part of the key name, not a path separator.
 ///
-/// Ordering and comments from the on-disk file are preserved line-by-line.
-/// Bundle-only managed keys that do not appear on disk are appended at the end.
+/// The bundle file is replayed line-by-line as the authoritative base.
+/// Preserved keys (matched via glob) take the disk value when present.
+/// Keys present only on disk (user additions absent from the bundle) are
+/// appended sorted at the end.
 fn merge_properties(
     on_disk: &[u8],
     from_bundle: &[u8],
-    managed_keys: &[String],
+    preserve_keys: &[String],
 ) -> Result<Vec<u8>> {
     let disk_str =
         std::str::from_utf8(on_disk).context("on-disk .properties is not valid UTF-8")?;
     let bundle_str =
         std::str::from_utf8(from_bundle).context("bundle .properties is not valid UTF-8")?;
 
-    let bundle_props = parse_properties(bundle_str)?;
-    let managed_set: HashSet<&str> = managed_keys.iter().map(String::as_str).collect();
+    let disk_props = parse_properties(disk_str)?;
 
-    // Replay the on-disk file line by line, substituting managed keys.
+    // Replay the bundle file line by line — bundle is the authoritative base.
     let mut output = String::new();
     let mut written_keys: HashSet<String> = HashSet::new();
 
-    for logical in logical_property_lines(disk_str) {
+    for logical in logical_property_lines(bundle_str) {
         match logical {
             PropertyLine::Comment(c) => {
                 output.push_str(&c);
@@ -281,36 +438,39 @@ fn merge_properties(
                 output.push('\n');
             }
             PropertyLine::KeyValue { key, raw_line } => {
-                if managed_set.contains(key.as_str()) {
-                    // Replace with bundle value if present, otherwise keep disk.
-                    if let Some(bundle_val) = bundle_props.get(&key) {
+                written_keys.insert(key.clone());
+                if properties_key_matches_any(&key, preserve_keys) {
+                    if let Some(disk_val) = disk_props.get(&key) {
+                        // Preserved key with a disk value — keep the user's value.
                         output.push_str(&format!(
                             "{}={}\n",
                             escape_property_key(&key),
-                            escape_property_value(bundle_val)
+                            escape_property_value(disk_val)
                         ));
-                        written_keys.insert(key);
                         continue;
                     }
                 }
+                // Non-preserved, or preserved but not present on disk:
+                // emit the bundle line verbatim.
                 output.push_str(&raw_line);
                 output.push('\n');
-                written_keys.insert(key);
             }
         }
     }
 
-    // Append bundle-only managed keys not present on disk.
-    for key in managed_keys {
-        if !written_keys.contains(key) {
-            if let Some(bundle_val) = bundle_props.get(key) {
-                output.push_str(&format!(
-                    "{}={}\n",
-                    escape_property_key(key),
-                    escape_property_value(bundle_val)
-                ));
-            }
-        }
+    // Append disk-only keys (user additions absent from the bundle).
+    // Sorted for deterministic output.
+    let mut disk_only: Vec<(&String, &String)> = disk_props
+        .iter()
+        .filter(|(k, _)| !written_keys.contains(*k))
+        .collect();
+    disk_only.sort_by_key(|(k, _)| k.as_str());
+    for (key, val) in disk_only {
+        output.push_str(&format!(
+            "{}={}\n",
+            escape_property_key(key),
+            escape_property_value(val)
+        ));
     }
 
     Ok(output.into_bytes())
@@ -323,7 +483,7 @@ enum PropertyLine {
     /// A truly blank line.
     Blank,
     /// A key=value pair.  `raw_line` is the original line text (without the
-    /// trailing newline) for faithful round-tripping of non-managed keys.
+    /// trailing newline) for faithful round-tripping of non-preserved keys.
     KeyValue { key: String, raw_line: String },
 }
 
@@ -364,16 +524,14 @@ fn logical_property_lines(content: &str) -> Vec<PropertyLine> {
             // Start accumulating a continuation.
             let without_bs = trimmed.trim_end_matches('\\').trim_end();
             pending_continuation = Some(format!("{} ", without_bs));
+        } else if let Some((key, _val)) = parse_property_kv(trimmed) {
+            result.push(PropertyLine::KeyValue {
+                key,
+                raw_line: raw.to_string(),
+            });
         } else {
-            if let Some((key, _val)) = parse_property_kv(trimmed) {
-                result.push(PropertyLine::KeyValue {
-                    key,
-                    raw_line: raw.to_string(),
-                });
-            } else {
-                // Malformed line — preserve it as a comment.
-                result.push(PropertyLine::Comment(raw.to_string()));
-            }
+            // Malformed line — preserve it as a comment.
+            result.push(PropertyLine::Comment(raw.to_string()));
         }
     }
 
@@ -494,7 +652,7 @@ fn unescape_property(s: &str) -> String {
 
 /// Escape a key for use in a `.properties` file.
 ///
-/// Escapes `=`, `:`, `#`, `!`, `\`, and leading/trailing whitespace.
+/// Escapes `=`, `:`, `#`, `!`, `\`, and leading whitespace.
 fn escape_property_key(s: &str) -> String {
     let mut result = String::with_capacity(s.len());
     for (i, c) in s.chars().enumerate() {
@@ -516,9 +674,7 @@ fn escape_property_key(s: &str) -> String {
 
 /// Escape a value for use in a `.properties` file.
 ///
-/// Escapes `\\`, newlines, and form-feeds.  Leading whitespace is preserved
-/// as-is (the reader trims leading separator whitespace, so we don't need to
-/// escape it here).
+/// Escapes `\\`, newlines, and form-feeds.
 fn escape_property_value(s: &str) -> String {
     let mut result = String::with_capacity(s.len());
     for c in s.chars() {
@@ -536,6 +692,8 @@ fn escape_property_value(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── format detection ──────────────────────────────────────────────────────
 
     #[test]
     fn format_yml() {
@@ -587,149 +745,382 @@ mod tests {
         assert_eq!(detect_format(Path::new("native.so")), None);
     }
 
+    // ── segs_match ────────────────────────────────────────────────────────────
+
     #[test]
-    fn yaml_managed_key_taken_from_bundle() {
+    fn segs_match_literal_equal() {
+        assert!(segs_match(&["a", "b"], &["a", "b"]));
+    }
+
+    #[test]
+    fn segs_match_literal_not_equal() {
+        assert!(!segs_match(&["a", "b"], &["a", "c"]));
+    }
+
+    #[test]
+    fn segs_match_star_single_segment() {
+        assert!(segs_match(&["a", "foo"], &["a", "*"]));
+        assert!(segs_match(&["a", "bar"], &["a", "*"]));
+    }
+
+    #[test]
+    fn segs_match_star_does_not_cross_segment_boundary() {
+        // "a.*" must NOT match the three-segment path "a.b.c".
+        assert!(!segs_match(&["a", "b", "c"], &["a", "*"]));
+    }
+
+    #[test]
+    fn segs_match_double_star_any_depth() {
+        assert!(segs_match(&["a"], &["**"]));
+        assert!(segs_match(&["a", "b"], &["**"]));
+        assert!(segs_match(&["a", "b", "c"], &["**"]));
+    }
+
+    #[test]
+    fn segs_match_double_star_zero_segments() {
+        // "a.**" matches "a" itself because ** can match zero segments.
+        assert!(segs_match(&["a"], &["a", "**"]));
+        assert!(segs_match(&["a", "b"], &["a", "**"]));
+        assert!(segs_match(&["a", "b", "c"], &["a", "**"]));
+    }
+
+    #[test]
+    fn segs_match_double_star_in_middle() {
+        assert!(segs_match(&["a", "b"], &["a", "**", "b"]));
+        assert!(segs_match(&["a", "x", "b"], &["a", "**", "b"]));
+        assert!(segs_match(&["a", "x", "y", "b"], &["a", "**", "b"]));
+        assert!(!segs_match(&["a", "x", "c"], &["a", "**", "b"]));
+    }
+
+    #[test]
+    fn segs_match_mixed_star_and_literal() {
+        assert!(segs_match(
+            &["key", "foo", "password"],
+            &["key", "*", "password"]
+        ));
+        // Four segments should NOT match the three-segment pattern.
+        assert!(!segs_match(
+            &["key", "foo", "bar", "password"],
+            &["key", "*", "password"]
+        ));
+    }
+
+    #[test]
+    fn segs_match_empty_both() {
+        assert!(segs_match(&[], &[]));
+    }
+
+    #[test]
+    fn segs_match_empty_path_non_empty_literal_pattern() {
+        assert!(!segs_match(&[], &["a"]));
+    }
+
+    #[test]
+    fn segs_match_empty_path_double_star_matches() {
+        // ** can match zero segments, so it matches an empty path.
+        assert!(segs_match(&[], &["**"]));
+    }
+
+    // ── path_matches_any ──────────────────────────────────────────────────────
+
+    #[test]
+    fn path_matches_any_exact() {
+        assert!(path_matches_any("a.b.c", &["a.b.c".to_string()]));
+        assert!(!path_matches_any("a.b.d", &["a.b.c".to_string()]));
+    }
+
+    #[test]
+    fn path_matches_any_star_pattern() {
+        assert!(path_matches_any(
+            "settings.volume",
+            &["settings.*".to_string()]
+        ));
+        // Two levels deep — not matched by single *.
+        assert!(!path_matches_any(
+            "settings.a.b",
+            &["settings.*".to_string()]
+        ));
+    }
+
+    #[test]
+    fn path_matches_any_double_star_pattern() {
+        assert!(path_matches_any("a.b.c", &["a.**".to_string()]));
+        assert!(path_matches_any("a.b", &["a.**".to_string()]));
+    }
+
+    #[test]
+    fn path_matches_any_global_double_star() {
+        assert!(path_matches_any(
+            "anything.nested.deep",
+            &["**".to_string()]
+        ));
+    }
+
+    #[test]
+    fn path_matches_any_no_patterns() {
+        assert!(!path_matches_any("anything", &[]));
+    }
+
+    // ── YAML ──────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn yaml_preserve_key_kept_from_disk() {
         let disk = b"homes:\n  max-homes: 3\n  bed-respawn: false\n";
         let bundle = b"homes:\n  max-homes: 10\n  bed-respawn: true\n";
-        let managed = vec!["homes.max-homes".to_string()];
+        let preserve = vec!["homes.max-homes".to_string()];
         let path = Path::new("config.yml");
 
-        let merged = merge_config(disk, bundle, &managed, path).unwrap().unwrap();
+        let merged = merge_config(disk, bundle, &preserve, path)
+            .unwrap()
+            .unwrap();
         let merged_val: serde_yaml::Value = serde_yaml::from_slice(&merged).unwrap();
 
-        // Managed key: bundle wins.
-        assert_eq!(
-            merged_val["homes"]["max-homes"],
-            serde_yaml::Value::from(10)
-        );
-        // Non-managed key: disk wins.
+        // Preserved key: disk wins.
+        assert_eq!(merged_val["homes"]["max-homes"], serde_yaml::Value::from(3));
+        // Non-preserved key: bundle wins.
         assert_eq!(
             merged_val["homes"]["bed-respawn"],
-            serde_yaml::Value::from(false)
+            serde_yaml::Value::from(true)
         );
     }
 
     #[test]
-    fn yaml_non_managed_keys_preserved() {
+    fn yaml_non_preserve_key_overwritten_by_bundle() {
         let disk = b"user-key: disk-value\nbundle-key: disk-version\n";
         let bundle = b"user-key: bundle-value\nbundle-key: bundle-version\n";
-        let managed = vec!["bundle-key".to_string()];
+        let preserve = vec!["bundle-key".to_string()];
         let path = Path::new("plugins/A/config.yml");
 
-        let merged = merge_config(disk, bundle, &managed, path).unwrap().unwrap();
+        let merged = merge_config(disk, bundle, &preserve, path)
+            .unwrap()
+            .unwrap();
         let merged_val: serde_yaml::Value = serde_yaml::from_slice(&merged).unwrap();
 
+        // Not preserved: bundle wins.
         assert_eq!(
             merged_val["user-key"],
-            serde_yaml::Value::String("disk-value".to_string())
+            serde_yaml::Value::String("bundle-value".to_string())
         );
+        // Preserved: disk wins.
         assert_eq!(
             merged_val["bundle-key"],
-            serde_yaml::Value::String("bundle-version".to_string())
+            serde_yaml::Value::String("disk-version".to_string())
         );
     }
 
     #[test]
-    fn yaml_missing_managed_key_in_bundle_preserved_from_disk() {
-        let disk = b"key: disk-value\n";
-        let bundle = b"other: something\n";
-        let managed = vec!["key".to_string()];
+    fn yaml_preserve_key_missing_from_disk_uses_bundle_value() {
+        // When disk does not have the preserved key, the bundle's value is used.
+        let disk = b"other: something\n";
+        let bundle = b"key: bundle-value\n";
+        let preserve = vec!["key".to_string()];
         let path = Path::new("config.yml");
 
-        let merged = merge_config(disk, bundle, &managed, path).unwrap().unwrap();
+        let merged = merge_config(disk, bundle, &preserve, path)
+            .unwrap()
+            .unwrap();
         let merged_val: serde_yaml::Value = serde_yaml::from_slice(&merged).unwrap();
 
         assert_eq!(
             merged_val["key"],
-            serde_yaml::Value::String("disk-value".to_string())
+            serde_yaml::Value::String("bundle-value".to_string())
         );
     }
 
     #[test]
-    fn yaml_deeply_nested_key() {
+    fn yaml_deeply_nested_preserve_key() {
         let disk = b"a:\n  b:\n    c: disk\n    d: disk\n";
         let bundle = b"a:\n  b:\n    c: bundle\n    d: bundle\n";
-        let managed = vec!["a.b.c".to_string()];
+        let preserve = vec!["a.b.c".to_string()];
         let path = Path::new("config.yml");
 
-        let merged = merge_config(disk, bundle, &managed, path).unwrap().unwrap();
+        let merged = merge_config(disk, bundle, &preserve, path)
+            .unwrap()
+            .unwrap();
         let merged_val: serde_yaml::Value = serde_yaml::from_slice(&merged).unwrap();
 
+        // Preserved: disk wins.
         assert_eq!(
             merged_val["a"]["b"]["c"],
-            serde_yaml::Value::String("bundle".to_string())
+            serde_yaml::Value::String("disk".to_string())
         );
+        // Non-preserved: bundle wins.
         assert_eq!(
             merged_val["a"]["b"]["d"],
-            serde_yaml::Value::String("disk".to_string())
+            serde_yaml::Value::String("bundle".to_string())
         );
     }
 
     #[test]
-    fn yaml_empty_managed_keys_leaves_disk_unchanged() {
+    fn yaml_empty_preserve_keys_bundle_wins_all() {
+        // No preserve keys → bundle wins every key.
         let disk = b"key: disk-value\n";
         let bundle = b"key: bundle-value\n";
         let path = Path::new("config.yml");
 
         let merged = merge_config(disk, bundle, &[], path).unwrap().unwrap();
         let merged_val: serde_yaml::Value = serde_yaml::from_slice(&merged).unwrap();
+
         assert_eq!(
             merged_val["key"],
-            serde_yaml::Value::String("disk-value".to_string())
+            serde_yaml::Value::String("bundle-value".to_string())
         );
     }
 
     #[test]
-    fn toml_managed_key_from_bundle() {
+    fn yaml_glob_star_matches_any_single_segment() {
+        let disk = b"settings:\n  volume: 50\n  lang: en-US\n";
+        let bundle = b"settings:\n  volume: 100\n  lang: de-DE\n";
+        let preserve = vec!["settings.*".to_string()];
+        let path = Path::new("config.yml");
+
+        let merged = merge_config(disk, bundle, &preserve, path)
+            .unwrap()
+            .unwrap();
+        let merged_val: serde_yaml::Value = serde_yaml::from_slice(&merged).unwrap();
+
+        // Both direct children of `settings` match `settings.*` → disk wins.
+        assert_eq!(
+            merged_val["settings"]["volume"],
+            serde_yaml::Value::from(50)
+        );
+        assert_eq!(
+            merged_val["settings"]["lang"],
+            serde_yaml::Value::String("en-US".to_string())
+        );
+    }
+
+    #[test]
+    fn yaml_glob_star_does_not_cross_segment_boundary() {
+        // "a.*" must NOT match "a.b.c" — that path is two levels below `a`.
+        let disk = b"a:\n  b:\n    c: disk\n";
+        let bundle = b"a:\n  b:\n    c: bundle\n";
+        let preserve = vec!["a.*".to_string()];
+        let path = Path::new("config.yml");
+
+        let merged = merge_config(disk, bundle, &preserve, path)
+            .unwrap()
+            .unwrap();
+        let merged_val: serde_yaml::Value = serde_yaml::from_slice(&merged).unwrap();
+
+        assert_eq!(
+            merged_val["a"]["b"]["c"],
+            serde_yaml::Value::String("bundle".to_string())
+        );
+    }
+
+    #[test]
+    fn yaml_glob_double_star_matches_any_depth() {
+        let disk = b"a:\n  b:\n    c: disk\n  d: disk\n";
+        let bundle = b"a:\n  b:\n    c: bundle\n  d: bundle\n";
+        let preserve = vec!["a.**".to_string()];
+        let path = Path::new("config.yml");
+
+        let merged = merge_config(disk, bundle, &preserve, path)
+            .unwrap()
+            .unwrap();
+        let merged_val: serde_yaml::Value = serde_yaml::from_slice(&merged).unwrap();
+
+        // Both descendants of `a` match `a.**` → disk wins at any depth.
+        assert_eq!(
+            merged_val["a"]["b"]["c"],
+            serde_yaml::Value::String("disk".to_string())
+        );
+        assert_eq!(
+            merged_val["a"]["d"],
+            serde_yaml::Value::String("disk".to_string())
+        );
+    }
+
+    #[test]
+    fn yaml_glob_double_star_alone_preserves_all() {
+        let disk = b"x: disk-x\ny: disk-y\n";
+        let bundle = b"x: bundle-x\ny: bundle-y\n";
+        let preserve = vec!["**".to_string()];
+        let path = Path::new("config.yml");
+
+        let merged = merge_config(disk, bundle, &preserve, path)
+            .unwrap()
+            .unwrap();
+        let merged_val: serde_yaml::Value = serde_yaml::from_slice(&merged).unwrap();
+
+        assert_eq!(
+            merged_val["x"],
+            serde_yaml::Value::String("disk-x".to_string())
+        );
+        assert_eq!(
+            merged_val["y"],
+            serde_yaml::Value::String("disk-y".to_string())
+        );
+    }
+
+    // ── TOML ──────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn toml_preserve_key_from_disk() {
         let disk = b"[database]\nurl = \"disk-url\"\nport = 3306\n";
         let bundle = b"[database]\nurl = \"bundle-url\"\nport = 5432\n";
-        let managed = vec!["database.url".to_string()];
+        let preserve = vec!["database.url".to_string()];
         let path = Path::new("config.toml");
 
-        let merged = merge_config(disk, bundle, &managed, path).unwrap().unwrap();
+        let merged = merge_config(disk, bundle, &preserve, path)
+            .unwrap()
+            .unwrap();
         let merged_val: toml::Value =
             toml::from_str(std::str::from_utf8(&merged).unwrap()).unwrap();
 
+        // Preserved: disk wins.
         assert_eq!(
             merged_val["database"]["url"],
-            toml::Value::String("bundle-url".to_string())
+            toml::Value::String("disk-url".to_string())
         );
-        assert_eq!(merged_val["database"]["port"], toml::Value::Integer(3306));
+        // Non-preserved: bundle wins.
+        assert_eq!(merged_val["database"]["port"], toml::Value::Integer(5432));
     }
 
     #[test]
-    fn toml_top_level_key() {
+    fn toml_top_level_preserve_key() {
         let disk = b"name = \"disk-name\"\nversion = \"1.0\"\n";
         let bundle = b"name = \"bundle-name\"\nversion = \"2.0\"\n";
-        let managed = vec!["version".to_string()];
+        let preserve = vec!["version".to_string()];
         let path = Path::new("plugin.toml");
 
-        let merged = merge_config(disk, bundle, &managed, path).unwrap().unwrap();
+        let merged = merge_config(disk, bundle, &preserve, path)
+            .unwrap()
+            .unwrap();
         let merged_val: toml::Value =
             toml::from_str(std::str::from_utf8(&merged).unwrap()).unwrap();
 
+        // Non-preserved: bundle wins.
         assert_eq!(
             merged_val["name"],
-            toml::Value::String("disk-name".to_string())
+            toml::Value::String("bundle-name".to_string())
         );
+        // Preserved: disk wins.
         assert_eq!(
             merged_val["version"],
-            toml::Value::String("2.0".to_string())
+            toml::Value::String("1.0".to_string())
         );
     }
 
+    // ── JSON ──────────────────────────────────────────────────────────────────
+
     #[test]
-    fn json_managed_key_from_bundle() {
+    fn json_preserve_key_from_disk() {
         let disk = br#"{"config":{"timeout":30,"retries":3}}"#;
         let bundle = br#"{"config":{"timeout":60,"retries":5}}"#;
-        let managed = vec!["config.timeout".to_string()];
+        let preserve = vec!["config.timeout".to_string()];
         let path = Path::new("settings.json");
 
-        let merged = merge_config(disk, bundle, &managed, path).unwrap().unwrap();
+        let merged = merge_config(disk, bundle, &preserve, path)
+            .unwrap()
+            .unwrap();
         let merged_val: serde_json::Value = serde_json::from_slice(&merged).unwrap();
 
-        assert_eq!(merged_val["config"]["timeout"], 60);
-        assert_eq!(merged_val["config"]["retries"], 3);
+        // Preserved: disk wins.
+        assert_eq!(merged_val["config"]["timeout"], 30);
+        // Non-preserved: bundle wins.
+        assert_eq!(merged_val["config"]["retries"], 5);
     }
 
     #[test]
@@ -738,59 +1129,103 @@ mod tests {
         assert!(merged.is_none());
     }
 
+    // ── .properties ───────────────────────────────────────────────────────────
+
     #[test]
-    fn properties_managed_key_from_bundle() {
-        let disk = b"# Server config\nserver-port=25565\nmax-players=20\n";
+    fn properties_preserve_key_from_disk() {
+        let disk = b"server-port=25565\nmax-players=20\n";
         let bundle = b"server-port=25566\nmax-players=100\n";
-        let managed = vec!["max-players".to_string()];
+        let preserve = vec!["max-players".to_string()];
         let path = Path::new("server.properties");
 
-        let merged = merge_config(disk, bundle, &managed, path).unwrap().unwrap();
+        let merged = merge_config(disk, bundle, &preserve, path)
+            .unwrap()
+            .unwrap();
         let merged_str = std::str::from_utf8(&merged).unwrap();
         let merged_props = parse_properties(merged_str).unwrap();
 
-        // Managed key: bundle wins.
+        // Preserved key: disk wins.
         assert_eq!(
             merged_props.get("max-players").map(String::as_str),
-            Some("100")
+            Some("20")
         );
-        // Non-managed key: disk value preserved.
+        // Non-preserved key: bundle wins.
         assert_eq!(
             merged_props.get("server-port").map(String::as_str),
-            Some("25565")
+            Some("25566")
         );
     }
 
     #[test]
-    fn properties_comments_preserved() {
-        let disk = b"# This is a comment\nkey=disk-value\n";
-        let bundle = b"key=bundle-value\n";
-        let managed = vec!["key".to_string()];
+    fn properties_bundle_comments_preserved() {
+        // Comments are replayed from the bundle (the authoritative base),
+        // not from the disk file.
+        let disk = b"key=disk-value\n";
+        let bundle = b"# Bundle comment\nkey=bundle-value\n";
+        let preserve = vec!["key".to_string()];
         let path = Path::new("server.properties");
 
-        let merged = merge_config(disk, bundle, &managed, path).unwrap().unwrap();
+        let merged = merge_config(disk, bundle, &preserve, path)
+            .unwrap()
+            .unwrap();
         let merged_str = std::str::from_utf8(&merged).unwrap();
-        assert!(merged_str.contains("# This is a comment"));
+
+        assert!(merged_str.contains("# Bundle comment"));
+        // Preserved key uses the disk value.
+        let merged_props = parse_properties(merged_str).unwrap();
+        assert_eq!(
+            merged_props.get("key").map(String::as_str),
+            Some("disk-value")
+        );
     }
 
     #[test]
-    fn properties_bundle_only_key_appended() {
-        // The disk file doesn't have `new-key` but bundle declares it as managed.
-        let disk = b"existing=value\n";
-        let bundle = b"existing=other\nnew-key=bundle-new\n";
-        let managed = vec!["new-key".to_string()];
+    fn properties_disk_only_key_appended() {
+        // Keys present only on disk (user additions) are appended at the end.
+        let disk = b"existing=disk-val\nuser-added=user-val\n";
+        let bundle = b"existing=bundle-val\n";
+        let preserve: Vec<String> = vec![];
         let path = Path::new("server.properties");
 
-        let merged = merge_config(disk, bundle, &managed, path).unwrap().unwrap();
+        let merged = merge_config(disk, bundle, &preserve, path)
+            .unwrap()
+            .unwrap();
         let merged_props = parse_properties(std::str::from_utf8(&merged).unwrap()).unwrap();
 
+        // Non-preserved bundle key: bundle wins.
         assert_eq!(
             merged_props.get("existing").map(String::as_str),
-            Some("value")
+            Some("bundle-val")
         );
+        // Disk-only key: appended from disk.
         assert_eq!(
-            merged_props.get("new-key").map(String::as_str),
-            Some("bundle-new")
+            merged_props.get("user-added").map(String::as_str),
+            Some("user-val")
+        );
+    }
+
+    #[test]
+    fn properties_preserve_key_missing_from_disk_uses_bundle_value() {
+        // When disk does not have the preserved key, the bundle value is used.
+        let disk = b"other=something\n";
+        let bundle = b"key=bundle-val\n";
+        let preserve = vec!["key".to_string()];
+        let path = Path::new("config.properties");
+
+        let merged = merge_config(disk, bundle, &preserve, path)
+            .unwrap()
+            .unwrap();
+        let merged_props = parse_properties(std::str::from_utf8(&merged).unwrap()).unwrap();
+
+        // Preserved but not on disk → bundle value used.
+        assert_eq!(
+            merged_props.get("key").map(String::as_str),
+            Some("bundle-val")
+        );
+        // Disk-only key → appended.
+        assert_eq!(
+            merged_props.get("other").map(String::as_str),
+            Some("something")
         );
     }
 
@@ -799,21 +1234,77 @@ mod tests {
         // In .properties, `home.bed-respawn` is the literal key — not a path.
         let disk = b"home.bed-respawn=false\nhomes.max-homes=3\n";
         let bundle = b"home.bed-respawn=true\nhomes.max-homes=10\n";
-        let managed = vec!["homes.max-homes".to_string()];
+        let preserve = vec!["homes.max-homes".to_string()];
         let path = Path::new("essentials.properties");
 
-        let merged = merge_config(disk, bundle, &managed, path).unwrap().unwrap();
+        let merged = merge_config(disk, bundle, &preserve, path)
+            .unwrap()
+            .unwrap();
+        let merged_props = parse_properties(std::str::from_utf8(&merged).unwrap()).unwrap();
+
+        // Non-preserved: bundle wins.
+        assert_eq!(
+            merged_props.get("home.bed-respawn").map(String::as_str),
+            Some("true")
+        );
+        // Preserved literal dotted key: disk wins.
+        assert_eq!(
+            merged_props.get("homes.max-homes").map(String::as_str),
+            Some("3")
+        );
+    }
+
+    #[test]
+    fn properties_glob_star_preserves_all() {
+        // "*" matches every key → all disk values are kept.
+        let disk = b"server-port=25565\nmax-players=20\n";
+        let bundle = b"server-port=25566\nmax-players=100\n";
+        let preserve = vec!["*".to_string()];
+        let path = Path::new("server.properties");
+
+        let merged = merge_config(disk, bundle, &preserve, path)
+            .unwrap()
+            .unwrap();
         let merged_props = parse_properties(std::str::from_utf8(&merged).unwrap()).unwrap();
 
         assert_eq!(
-            merged_props.get("home.bed-respawn").map(String::as_str),
-            Some("false")
+            merged_props.get("server-port").map(String::as_str),
+            Some("25565")
         );
         assert_eq!(
-            merged_props.get("homes.max-homes").map(String::as_str),
-            Some("10")
+            merged_props.get("max-players").map(String::as_str),
+            Some("20")
         );
     }
+
+    #[test]
+    fn properties_glob_prefix_star_matches() {
+        // "plugin.*" preserves keys whose name starts with "plugin."
+        // (dot is a literal character in .properties key names).
+        let disk = b"plugin.timeout=5000\nplugin.retry=3\nother=yes\n";
+        let bundle = b"plugin.timeout=10000\nplugin.retry=10\nother=no\n";
+        let preserve = vec!["plugin.*".to_string()];
+        let path = Path::new("config.properties");
+
+        let merged = merge_config(disk, bundle, &preserve, path)
+            .unwrap()
+            .unwrap();
+        let merged_props = parse_properties(std::str::from_utf8(&merged).unwrap()).unwrap();
+
+        // plugin.* keys: disk wins.
+        assert_eq!(
+            merged_props.get("plugin.timeout").map(String::as_str),
+            Some("5000")
+        );
+        assert_eq!(
+            merged_props.get("plugin.retry").map(String::as_str),
+            Some("3")
+        );
+        // Not matched: bundle wins.
+        assert_eq!(merged_props.get("other").map(String::as_str), Some("no"));
+    }
+
+    // ── unescape / escape / parse helpers ─────────────────────────────────────
 
     #[test]
     fn unescape_newline() {

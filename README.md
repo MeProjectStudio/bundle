@@ -180,15 +180,31 @@ ADD  ./config/sodium/                 config/sodium/
 
 ---
 
-## Config ownership with MANAGE (EXPERIMENTAL)
+## Preserving user config with PRESERVE
 
-`MANAGE` lets a bundle declare which keys it owns in a config file. On
-`bundle server apply`, declared keys are taken from the bundle; every other
-key keeps its on-disk value so user edits are never clobbered:
+`PRESERVE` lets a bundle author declare which config keys the server admin
+is allowed to customise. On `bundle server apply` the bundle is the
+authoritative base — its values win by default — but any key listed in
+`PRESERVE` keeps the admin's on-disk value unchanged:
 
 ```dockerfile
-MANAGE plugins/MyPlugin/config.yml: settings.enabled, settings.max-players
+PRESERVE plugins/MyPlugin/config.yml: settings.language, settings.max-homes
 ```
+
+Patterns support wildcards:
+
+```dockerfile
+# preserve every key the admin might have set under `database`
+PRESERVE plugins/MyPlugin/config.yml: database.**
+
+# preserve a specific nested key
+PRESERVE plugins/MyPlugin/config.yml: network.*.port
+
+# preserve all keys in a .properties file (including user additions)
+PRESERVE server.properties: *
+```
+
+Files without a `PRESERVE` directive are always fully overwritten by the bundle.
 
 ---
 

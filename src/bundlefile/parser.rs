@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use anyhow::{bail, Context, Result};
 
 use super::types::{
-    AddDirective, AddSource, Bundlefile, CopyDirective, CopyFrom, ManageDirective, Stage,
+    AddDirective, AddSource, Bundlefile, CopyDirective, CopyFrom, PreserveDirective, Stage,
 };
 
 /// Parse the contents of a `Bundlefile`, substituting `${ARG}` references.
@@ -25,7 +25,7 @@ use super::types::{
 ///
 /// COPY --from=deps  mods/Foo.jar  mods/Foo.jar
 ///
-/// MANAGE plugins/Essentials/config.yml: home.bed-respawn, homes.max-homes
+/// PRESERVE plugins/Essentials/config.yml: home.bed-respawn, homes.max-homes
 /// ```
 ///
 /// Lines starting with `#` are comments and are ignored.
@@ -160,29 +160,29 @@ pub fn parse(content: &str, cli_overrides: &HashMap<String, String>) -> Result<B
                 stage.labels.extend(pairs);
             }
 
-            "MANAGE" => {
+            "PRESERVE" => {
                 let scope = stage_args.last().ok_or_else(|| {
-                    anyhow::anyhow!("line {}: MANAGE before any FROM", lineno + 1)
+                    anyhow::anyhow!("line {}: PRESERVE before any FROM", lineno + 1)
                 })?;
                 let stage = current_stage_mut(&mut stages, lineno + 1)?;
-                let manage = handle_manage(rest, scope)
-                    .with_context(|| format!("line {}: MANAGE parse error", lineno + 1))?;
+                let manage = handle_preserve(rest, scope)
+                    .with_context(|| format!("line {}: PRESERVE parse error", lineno + 1))?;
                 // Same config path in the same stage: last writer wins.
                 if let Some(existing) = stage
-                    .manages
+                    .preserves
                     .iter_mut()
                     .find(|m| m.config_path == manage.config_path)
                 {
                     existing.keys = manage.keys;
                 } else {
-                    stage.manages.push(manage);
+                    stage.preserves.push(manage);
                 }
             }
 
             other => {
                 bail!(
                     "line {}: unknown directive '{}'; \
-                     expected one of ARG, FROM, ADD, COPY, LABEL, MANAGE",
+                     expected one of ARG, FROM, ADD, COPY, LABEL, PRESERVE",
                     lineno + 1,
                     other
                 );
@@ -412,18 +412,18 @@ fn handle_copy(rest: &str, args: &HashMap<String, String>) -> Result<CopyDirecti
     Ok(CopyDirective { from, src, dest })
 }
 
-/// `MANAGE <config-path>: <key>, <key>, ...`
-fn handle_manage(rest: &str, args: &HashMap<String, String>) -> Result<ManageDirective> {
+/// `PRESERVE <config-path>: <key>, <key>, ...`
+fn handle_preserve(rest: &str, args: &HashMap<String, String>) -> Result<PreserveDirective> {
     let rest = substitute(rest.trim(), args);
 
     // Split on `:` — the config path is before the colon, the keys after.
     let (config_path_raw, keys_raw) = rest.split_once(':').ok_or_else(|| {
-        anyhow::anyhow!("MANAGE requires the form `<config-path>: key1, key2, ...`")
+        anyhow::anyhow!("PRESERVE requires the form `<config-path>: key1, key2, ...`")
     })?;
 
     let config_path = config_path_raw.trim().to_string();
     if config_path.is_empty() {
-        bail!("MANAGE config path must not be empty");
+        bail!("PRESERVE config path must not be empty");
     }
 
     let keys: Vec<String> = keys_raw
@@ -434,12 +434,12 @@ fn handle_manage(rest: &str, args: &HashMap<String, String>) -> Result<ManageDir
 
     if keys.is_empty() {
         bail!(
-            "MANAGE '{}' declares no keys; at least one key is required",
+            "PRESERVE '{}' declares no keys; at least one key is required",
             config_path
         );
     }
 
-    Ok(ManageDirective { config_path, keys })
+    Ok(PreserveDirective { config_path, keys })
 }
 
 // ─── Substitution ─────────────────────────────────────────────────────────────
@@ -1189,28 +1189,28 @@ mod tests {
     // ── MANAGE ────────────────────────────────────────────────────────────────
 
     #[test]
-    fn manage_directive() {
+    fn preserve_directive() {
         let src = concat!(
             "FROM scratch\n",
-            "MANAGE plugins/Essentials/config.yml: home.bed-respawn, homes.max-homes\n",
+            "PRESERVE plugins/Essentials/config.yml: home.bed-respawn, homes.max-homes\n",
         );
         let bf = parse(src, &no_overrides()).unwrap();
-        let m = &bf.stages[0].manages[0];
+        let m = &bf.stages[0].preserves[0];
         assert_eq!(m.config_path, "plugins/Essentials/config.yml");
         assert_eq!(m.keys, vec!["home.bed-respawn", "homes.max-homes"]);
     }
 
     #[test]
-    fn manage_same_path_overrides_keys() {
+    fn preserve_same_path_overrides_keys() {
         let src = concat!(
             "FROM scratch\n",
-            "MANAGE plugins/A/config.yml: key.a\n",
-            "MANAGE plugins/A/config.yml: key.b\n",
+            "PRESERVE plugins/A/config.yml: key.a\n",
+            "PRESERVE plugins/A/config.yml: key.b\n",
         );
         let bf = parse(src, &no_overrides()).unwrap();
-        // Second MANAGE for the same config path wins.
-        assert_eq!(bf.stages[0].manages.len(), 1);
-        assert_eq!(bf.stages[0].manages[0].keys, vec!["key.b"]);
+        // Second PRESERVE for the same config path wins.
+        assert_eq!(bf.stages[0].preserves.len(), 1);
+        assert_eq!(bf.stages[0].preserves[0].keys, vec!["key.b"]);
     }
 
     // ── Line continuation ─────────────────────────────────────────────────────

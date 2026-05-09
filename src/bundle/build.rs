@@ -5,7 +5,7 @@
 //!
 //! For each Bundlefile stage (in order), all `ADD` and `COPY` files are batched
 //! into a single gzip-compressed OCI layer.  If a stage `FROM`s an existing OCI
-//! image its layer descriptors and `bundle.managed-keys` annotation are
+//! image its layer descriptors and `bundle.preserve-keys` annotation are
 //! inherited first.
 //!
 //! ## The OCI manifest IS the lock file
@@ -19,7 +19,7 @@
 //!
 //! ## Multi-stage annotation merging
 //!
-//! `MANAGE` directives accumulate across stages using last-writer-wins per
+//! `PRESERVE` directives accumulate across stages using last-writer-wins per
 //! config path (later stage wins).
 
 use std::collections::HashMap;
@@ -34,7 +34,7 @@ use oci_client::{Client, Reference};
 /// `FROM scratch` means "start with zero inherited layers" — it is a
 /// build-time concept only and never triggers a registry lookup.
 /// It maps directly to an OCI image whose `rootfs.diff_ids` contains
-use crate::bundle::annotations::{self, ManagedKeys};
+use crate::bundle::annotations::{self, PreserveKeys};
 use crate::bundle::layer::{self, collect_directory_entries, LayerEntry, PackedLayer};
 use crate::bundlefile::parser;
 use crate::bundlefile::types::{
@@ -81,7 +81,7 @@ pub async fn build_from_parsed(bundlefile: &Bundlefile, root_dir: &Path) -> Resu
     let mut all_layer_descriptors: Vec<Descriptor> = Vec::new();
     let mut all_diff_ids: Vec<String> = Vec::new();
     let mut new_blobs: HashMap<String, Vec<u8>> = HashMap::new();
-    let mut accumulated_managed_keys: ManagedKeys = ManagedKeys::new();
+    let mut accumulated_preserve_keys: PreserveKeys = PreserveKeys::new();
     let mut accumulated_labels: HashMap<String, String> = HashMap::new();
     let mut stage_outputs: StageOutputs = Vec::new();
 
@@ -137,7 +137,7 @@ pub async fn build_from_parsed(bundlefile: &Bundlefile, root_dir: &Path) -> Resu
             }
             all_layer_descriptors.extend(base_layers);
             all_diff_ids.extend(base_diff_ids);
-            accumulated_managed_keys = annotations::merge(accumulated_managed_keys, base_keys);
+            accumulated_preserve_keys = annotations::merge(accumulated_preserve_keys, base_keys);
         }
 
         // All files from this stage are batched into a single layer.
@@ -192,8 +192,8 @@ pub async fn build_from_parsed(bundlefile: &Bundlefile, root_dir: &Path) -> Resu
             all_layer_descriptors.push(descriptor);
         }
 
-        let stage_keys = annotations::from_manage_directives(&stage.manages);
-        accumulated_managed_keys = annotations::merge(accumulated_managed_keys, stage_keys);
+        let stage_keys = annotations::from_preserve_directives(&stage.preserves);
+        accumulated_preserve_keys = annotations::merge(accumulated_preserve_keys, stage_keys);
 
         // Labels accumulate across stages; later stages override earlier ones.
         accumulated_labels.extend(stage.labels.iter().map(|(k, v)| (k.clone(), v.clone())));
@@ -211,12 +211,12 @@ pub async fn build_from_parsed(bundlefile: &Bundlefile, root_dir: &Path) -> Resu
     );
 
     let manifest_annotations: Option<HashMap<String, String>> =
-        if accumulated_managed_keys.is_empty() {
+        if accumulated_preserve_keys.is_empty() {
             None
         } else {
             let mut ann: HashMap<String, String> = HashMap::new();
-            annotations::set_in_annotations(&mut ann, &accumulated_managed_keys)
-                .context("encoding bundle.managed-keys annotation")?;
+            annotations::set_in_annotations(&mut ann, &accumulated_preserve_keys)
+                .context("encoding bundle.preserve-keys annotation")?;
             Some(ann)
         };
 
@@ -629,16 +629,16 @@ fn collect_add_entries_for_path(src_path: &Path, dest: &str) -> Result<Vec<Layer
     }
 }
 
-/// Fetch the layer descriptors, diff_ids, and managed-keys annotation of an
+/// Fetch the layer descriptors, diff_ids, and preserve-keys annotation of an
 /// existing OCI image so that they can be inherited by the current build.
 ///
-/// Returns `(layer_descriptors, diff_ids, managed_keys)`.
+/// Returns `(layer_descriptors, diff_ids, preserve_keys)`.
 ///
 /// Errors here are treated as warnings by the caller — if the base image
 /// cannot be reached the build continues without inheriting base layers.
 async fn fetch_base_image_info(
     image_ref: &str,
-) -> Result<(Vec<Descriptor>, Vec<String>, ManagedKeys)> {
+) -> Result<(Vec<Descriptor>, Vec<String>, PreserveKeys)> {
     let cfg = ClientConfig {
         protocol: oci_client::client::ClientProtocol::Https,
         ..Default::default()
@@ -707,10 +707,10 @@ async fn fetch_base_image_info(
         }
     };
 
-    let managed_keys =
+    let preserve_keys =
         annotations::from_manifest_annotations(manifest.annotations()).unwrap_or_default();
 
-    Ok((manifest.layers().to_vec(), diff_ids, managed_keys))
+    Ok((manifest.layers().to_vec(), diff_ids, preserve_keys))
 }
 
 struct AsyncVecWriter {
@@ -983,7 +983,7 @@ mod tests {
 
         let bundlefile_content = "FROM scratch\n\
                 ADD ./build/MyPlugin.jar plugins/MyPlugin.jar\n\
-                MANAGE plugins/MyPlugin/config.yml: key.a, key.b\n";
+                PRESERVE plugins/MyPlugin/config.yml: key.a, key.b\n";
         let bundlefile_path = dir.path().join("Bundlefile");
         std::fs::write(&bundlefile_path, bundlefile_content).unwrap();
 
@@ -992,7 +992,7 @@ mod tests {
         let annotations = image.manifest.annotations().as_ref().unwrap();
         let managed = crate::bundle::annotations::decode(
             annotations
-                .get(crate::bundle::annotations::MANAGED_KEYS_ANNOTATION)
+                .get(crate::bundle::annotations::PRESERVE_KEYS_ANNOTATION)
                 .unwrap(),
         )
         .unwrap();
@@ -1010,12 +1010,12 @@ mod tests {
 
         let bundlefile_content = "FROM scratch\n\
                 ADD ./build/A.jar plugins/A.jar\n\
-                MANAGE plugins/A/config.yml: old.key\n\
+                PRESERVE plugins/A/config.yml: old.key\n\
                 \n\
                 FROM scratch\n\
                 ADD ./build/B.jar plugins/B.jar\n\
-                MANAGE plugins/A/config.yml: new.key\n\
-                MANAGE plugins/B/config.yml: b.key\n";
+                PRESERVE plugins/A/config.yml: new.key\n\
+                PRESERVE plugins/B/config.yml: b.key\n";
         let bundlefile_path = dir.path().join("Bundlefile");
         std::fs::write(&bundlefile_path, bundlefile_content).unwrap();
 
@@ -1024,7 +1024,7 @@ mod tests {
         let annotations = image.manifest.annotations().as_ref().unwrap();
         let managed = crate::bundle::annotations::decode(
             annotations
-                .get(crate::bundle::annotations::MANAGED_KEYS_ANNOTATION)
+                .get(crate::bundle::annotations::PRESERVE_KEYS_ANNOTATION)
                 .unwrap(),
         )
         .unwrap();

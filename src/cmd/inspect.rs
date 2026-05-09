@@ -194,11 +194,11 @@ fn print_image_info(
 
     // Bundle-specific managed-config annotation
     if let Some(anns) = manifest.annotations() {
-        if let Some(encoded) = anns.get(annotations::MANAGED_KEYS_ANNOTATION) {
+        if let Some(encoded) = anns.get(annotations::PRESERVE_KEYS_ANNOTATION) {
             if let Ok(keys_map) = annotations::decode(encoded) {
                 if !keys_map.is_empty() {
                     println!();
-                    println!("Managed configs:");
+                    println!("Preserved configs:");
                     let mut paths: Vec<&String> = keys_map.keys().collect();
                     paths.sort_unstable();
                     for path in paths {

@@ -12,18 +12,18 @@
 //!
 //! ## Config merge strategy
 //!
-//! For files listed in the `bundle.managed-keys` annotation:
+//! For files listed in the `bundle.preserve-keys` annotation:
 //!   - Parse both the on-disk file and the incoming bundle file.
-//!   - For each *managed key*: take the bundle's value.
-//!   - For all other keys: keep the user's on-disk value.
+//!   - For each *preserved key*: keep the user's on-disk value.
+//!   - For all other keys: take the bundle's value.
 //!   - Write the merged result.
 //!
 //! Files with unrecognised extensions (`.jar`, `.so`, …) are always
 //! overwritten with the bundle version.
 //!
 //! Files whose extension *is* recognised as a config format but that have
-//! **no** managed-key entry in the annotation are also always overwritten
-//! (the bundle author chose not to declare any managed keys for them).
+//! **no** preserve-key entry in the annotation are also always overwritten
+//! (the bundle author chose not to declare any preserve keys for them).
 //!
 //! ## Dry-run
 //!
@@ -35,7 +35,7 @@ use anyhow::{Context, Result};
 use oci_spec::image::ImageManifest;
 
 use crate::apply::merge::{detect_format, merge_config};
-use crate::bundle::annotations::{from_manifest_annotations, ManagedKeys};
+use crate::bundle::annotations::{from_manifest_annotations, PreserveKeys};
 use crate::registry::types::LocalCache;
 
 /// A single file-level change produced by [`apply_bundles`].
@@ -54,7 +54,7 @@ pub enum ChangeKind {
     Created,
     /// The file existed and was completely overwritten by the bundle version.
     Overwritten,
-    /// The file existed and was merged (managed keys updated, rest kept).
+    /// The file existed and was merged (preserve keys kept from disk, rest taken from bundle).
     Merged,
     /// The file would have been created (dry-run only).
     WouldCreate,
@@ -125,9 +125,9 @@ pub async fn apply_bundles(
             image_ref
         );
 
-        // Decode the bundle.managed-keys annotation from this manifest.
-        let managed_keys = from_manifest_annotations(manifest.annotations())
-            .with_context(|| format!("decoding managed-keys annotation for {}", image_ref))?;
+        // Decode the bundle.preserve-keys annotation from this manifest.
+        let preserve_keys = from_manifest_annotations(manifest.annotations())
+            .with_context(|| format!("decoding preserve-keys annotation for {}", image_ref))?;
 
         // Apply layers in order.
         for (layer_idx, descriptor) in manifest.layers().iter().enumerate() {
@@ -148,7 +148,7 @@ pub async fn apply_bundles(
 
             let changes = apply_layer(
                 &compressed,
-                &managed_keys,
+                &preserve_keys,
                 server_dir,
                 dry_run,
                 image_ref,
@@ -171,7 +171,7 @@ pub async fn apply_bundles(
 /// no remapping is performed.
 async fn apply_layer(
     compressed: &[u8],
-    managed_keys: &ManagedKeys,
+    preserve_keys: &PreserveKeys,
     server_dir: &Path,
     dry_run: bool,
     image_ref: &str,
@@ -305,7 +305,7 @@ async fn apply_layer(
                 &dest_path,
                 &data,
                 &server_rel_str,
-                managed_keys,
+                preserve_keys,
                 existed_before,
             )
         } else {
@@ -313,7 +313,7 @@ async fn apply_layer(
                 &dest_path,
                 &data,
                 &server_rel_str,
-                managed_keys,
+                preserve_keys,
                 mode,
                 existed_before,
             )
@@ -336,7 +336,7 @@ fn apply_file(
     dest_path: &Path,
     bundle_data: &[u8],
     server_rel: &str,
-    managed_keys: &ManagedKeys,
+    preserve_keys: &PreserveKeys,
     mode: u32,
     existed_before: bool,
 ) -> Result<ChangeKind> {
@@ -346,15 +346,15 @@ fn apply_file(
             .with_context(|| format!("creating parent directory: {}", parent.display()))?;
     }
 
-    // Look up managed keys for this config path.
-    let config_managed: Option<&Vec<String>> = managed_keys.get(server_rel);
+    // Look up preserve keys for this config path.
+    let config_preserve: Option<&Vec<String>> = preserve_keys.get(server_rel);
 
     let final_data: Vec<u8>;
     let kind: ChangeKind;
 
     if existed_before {
-        if let Some(keys) = config_managed {
-            // Config file with managed keys: attempt a merge.
+        if let Some(keys) = config_preserve {
+            // Config file with preserve keys: attempt a merge.
             let on_disk = std::fs::read(dest_path).with_context(|| {
                 format!("reading on-disk config for merge: {}", dest_path.display())
             })?;
@@ -373,7 +373,7 @@ fn apply_file(
                 }
             }
         } else {
-            // No managed keys — always overwrite.
+            // No preserve keys — always overwrite.
             final_data = bundle_data.to_vec();
             kind = ChangeKind::Overwritten;
         }
@@ -392,7 +392,7 @@ fn determine_dry_run_kind(
     _dest_path: &Path,
     _bundle_data: &[u8],
     server_rel: &str,
-    managed_keys: &ManagedKeys,
+    preserve_keys: &PreserveKeys,
     existed_before: bool,
 ) -> ChangeKind {
     if !existed_before {
@@ -400,7 +400,7 @@ fn determine_dry_run_kind(
     }
 
     // File exists — would we merge or overwrite?
-    if let Some(keys) = managed_keys.get(server_rel) {
+    if let Some(keys) = preserve_keys.get(server_rel) {
         if !keys.is_empty() && detect_format(Path::new(server_rel)).is_some() {
             return ChangeKind::WouldMerge;
         }
@@ -532,9 +532,9 @@ mod tests {
     // Build a minimal OciImageManifest with one layer whose blob is in `blobs`.
     fn make_manifest_with_blobs(
         layers: Vec<(String, Vec<u8>)>, // (digest, compressed_data)
-        managed: ManagedKeys,
+        managed: PreserveKeys,
     ) -> (ImageManifest, HashMap<String, Vec<u8>>) {
-        use crate::bundle::annotations::{encode, MANAGED_KEYS_ANNOTATION};
+        use crate::bundle::annotations::{encode, PRESERVE_KEYS_ANNOTATION};
         use crate::registry::types::{Descriptor, ImageManifestBuilder, MediaType, SCHEMA_VERSION};
 
         let annotations: Option<HashMap<String, String>> = if managed.is_empty() {
@@ -542,7 +542,7 @@ mod tests {
         } else {
             let mut ann = HashMap::new();
             ann.insert(
-                MANAGED_KEYS_ANNOTATION.to_string(),
+                PRESERVE_KEYS_ANNOTATION.to_string(),
                 encode(&managed).unwrap(),
             );
             Some(ann)
@@ -618,7 +618,7 @@ mod tests {
         ]);
 
         let (manifest, blobs) =
-            make_manifest_with_blobs(vec![(digest.clone(), compressed)], ManagedKeys::new());
+            make_manifest_with_blobs(vec![(digest.clone(), compressed)], PreserveKeys::new());
 
         let cache_dir = TempDir::new().unwrap();
         let cache = LocalCache::open_at(cache_dir.path()).unwrap();
@@ -664,7 +664,7 @@ mod tests {
         let (digest, compressed) = pack_jars_layer(vec![("mods/Sodium-0.5.jar", b"sodium-bytes")]);
 
         let (manifest, blobs) =
-            make_manifest_with_blobs(vec![(digest, compressed)], ManagedKeys::new());
+            make_manifest_with_blobs(vec![(digest, compressed)], PreserveKeys::new());
 
         let cache_dir = TempDir::new().unwrap();
         let cache = LocalCache::open_at(cache_dir.path()).unwrap();
@@ -709,7 +709,7 @@ mod tests {
             b"homes:\n  max-homes: 10\n  bed-respawn: true\nother: bundle-value\n",
         )]);
 
-        let mut managed = ManagedKeys::new();
+        let mut managed = PreserveKeys::new();
         managed.insert(
             "plugins/Essentials/config.yml".to_string(),
             vec!["homes.max-homes".to_string()],
@@ -741,16 +741,18 @@ mod tests {
         let merged: serde_yaml::Value =
             serde_yaml::from_reader(std::fs::File::open(&config_path).unwrap()).unwrap();
 
-        // Managed key: bundle wins (10).
-        assert_eq!(merged["homes"]["max-homes"], serde_yaml::Value::from(10));
-        // Non-managed keys: disk values preserved.
+        // Preserve key: disk wins (3).
+        assert_eq!(merged["homes"]["max-homes"], serde_yaml::Value::from(3));
+        // Non-preserved key: bundle wins.
         assert_eq!(
             merged["homes"]["bed-respawn"],
-            serde_yaml::Value::from(false)
+            serde_yaml::Value::from(true)
         );
+        // Bundle wins for `other` too (disk-only keys are not carried over
+        // for structured formats when not in the preserve list).
         assert_eq!(
             merged["other"],
-            serde_yaml::Value::String("user-value".to_string())
+            serde_yaml::Value::String("bundle-value".to_string())
         );
     }
 
@@ -767,9 +769,9 @@ mod tests {
         let (digest, compressed) =
             pack_files_layer(vec![("plugins/OldPlugin.jar", b"new-jar-bytes")]);
 
-        // No managed keys for jars — they are always overwritten.
+        // No preserve keys for jars — they are always overwritten.
         let (manifest, blobs) =
-            make_manifest_with_blobs(vec![(digest, compressed)], ManagedKeys::new());
+            make_manifest_with_blobs(vec![(digest, compressed)], PreserveKeys::new());
 
         let cache_dir = TempDir::new().unwrap();
         let cache = LocalCache::open_at(cache_dir.path()).unwrap();
@@ -800,7 +802,7 @@ mod tests {
             pack_files_layer(vec![("plugins/Test/config.yml", b"key: value\n")]);
 
         let (manifest, blobs) =
-            make_manifest_with_blobs(vec![(digest, compressed)], ManagedKeys::new());
+            make_manifest_with_blobs(vec![(digest, compressed)], PreserveKeys::new());
 
         let cache_dir = TempDir::new().unwrap();
         let cache = LocalCache::open_at(cache_dir.path()).unwrap();
@@ -838,7 +840,7 @@ mod tests {
         let (digest, compressed) =
             pack_files_layer(vec![("plugins/A/config.yml", b"key: bundle\n")]);
 
-        let mut managed = ManagedKeys::new();
+        let mut managed = PreserveKeys::new();
         managed.insert("plugins/A/config.yml".to_string(), vec!["key".to_string()]);
 
         let (manifest, blobs) = make_manifest_with_blobs(vec![(digest, compressed)], managed);
@@ -877,9 +879,9 @@ mod tests {
         let (digest_b, compressed_b) = pack_files_layer(vec![("file.txt", b"content-b")]);
 
         let (manifest_a, blobs_a) =
-            make_manifest_with_blobs(vec![(digest_a, compressed_a)], ManagedKeys::new());
+            make_manifest_with_blobs(vec![(digest_a, compressed_a)], PreserveKeys::new());
         let (manifest_b, blobs_b) =
-            make_manifest_with_blobs(vec![(digest_b, compressed_b)], ManagedKeys::new());
+            make_manifest_with_blobs(vec![(digest_b, compressed_b)], PreserveKeys::new());
 
         let cache_dir = TempDir::new().unwrap();
         let cache = LocalCache::open_at(cache_dir.path()).unwrap();
@@ -961,7 +963,7 @@ mod tests {
         let (digest, compressed) = pack_files_layer(vec![("bundle.lock", b"malicious-content")]);
 
         let (manifest, blobs) =
-            make_manifest_with_blobs(vec![(digest, compressed)], ManagedKeys::new());
+            make_manifest_with_blobs(vec![(digest, compressed)], PreserveKeys::new());
 
         let cache_dir = TempDir::new().unwrap();
         let cache = LocalCache::open_at(cache_dir.path()).unwrap();
@@ -1003,7 +1005,7 @@ mod tests {
         ]);
 
         let (manifest, blobs) =
-            make_manifest_with_blobs(vec![(digest, compressed)], ManagedKeys::new());
+            make_manifest_with_blobs(vec![(digest, compressed)], PreserveKeys::new());
 
         let cache_dir = TempDir::new().unwrap();
         let cache = LocalCache::open_at(cache_dir.path()).unwrap();
@@ -1043,7 +1045,7 @@ mod tests {
             pack_files_layer(vec![("bundle.lock", b"allowed-by-empty-deny-list")]);
 
         let (manifest, blobs) =
-            make_manifest_with_blobs(vec![(digest, compressed)], ManagedKeys::new());
+            make_manifest_with_blobs(vec![(digest, compressed)], PreserveKeys::new());
 
         let cache_dir = TempDir::new().unwrap();
         let cache = LocalCache::open_at(cache_dir.path()).unwrap();

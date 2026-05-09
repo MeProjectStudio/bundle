@@ -118,9 +118,9 @@ pub async fn run(args: BuildArgs) -> Result<()> {
         short(image.manifest.config().digest().as_ref())
     );
     if let Some(ref ann) = image.manifest.annotations() {
-        if let Some(mk) = ann.get(crate::bundle::annotations::MANAGED_KEYS_ANNOTATION) {
+        if let Some(mk) = ann.get(crate::bundle::annotations::PRESERVE_KEYS_ANNOTATION) {
             if let Ok(keys) = crate::bundle::annotations::decode(mk) {
-                println!("  managed configs : {} file(s)", keys.len());
+                println!("  preserve configs: {} file(s)", keys.len());
             }
         }
     }
