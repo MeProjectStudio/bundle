@@ -367,7 +367,7 @@ fn parse_key_val(s: &str) -> Result<(String, String), String> {
         if key.is_empty() {
             return Err(format!("KEY must not be empty in build-arg {:?}", s));
         }
-        Ok((key.to_string(), value.to_string()))
+        Ok((key.to_string(), strip_wrapping_quotes(value).to_string()))
     } else {
         // Bare KEY — attempt an environment lookup.
         let key = s.trim();
@@ -377,6 +377,18 @@ fn parse_key_val(s: &str) -> Result<(String, String), String> {
         let value = std::env::var(key).unwrap_or_default();
         Ok((key.to_string(), value))
     }
+}
+
+fn strip_wrapping_quotes(value: &str) -> &str {
+    if value.len() >= 2 {
+        let bytes = value.as_bytes();
+        let first = bytes[0];
+        let last = bytes[bytes.len() - 1];
+        if (first == b'"' && last == b'"') || (first == b'\'' && last == b'\'') {
+            return &value[1..value.len() - 1];
+        }
+    }
+    value
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -443,6 +455,20 @@ mod tests {
         let (k, v) = parse_key_val("KEY=hello world").unwrap();
         assert_eq!(k, "KEY");
         assert_eq!(v, "hello world");
+    }
+
+    #[test]
+    fn parse_key_val_strips_wrapping_double_quotes() {
+        let (k, v) = parse_key_val("SOMEVAR=\"somevar\"").unwrap();
+        assert_eq!(k, "SOMEVAR");
+        assert_eq!(v, "somevar");
+    }
+
+    #[test]
+    fn parse_key_val_strips_wrapping_single_quotes() {
+        let (k, v) = parse_key_val("SOMEVAR='somevar'").unwrap();
+        assert_eq!(k, "SOMEVAR");
+        assert_eq!(v, "somevar");
     }
 
     // ── Root commands ─────────────────────────────────────────────────────────
@@ -557,6 +583,25 @@ mod tests {
             assert_eq!(
                 build_arg,
                 vec![("VERSION".to_string(), "2.20.1".to_string())]
+            );
+        }
+    }
+
+    #[test]
+    fn cli_build_with_quoted_build_arg_strips_quotes() {
+        let cli = Cli::try_parse_from(["bundle", "build", "--build-arg", "SOMEVAR=\"somevar\""]);
+        assert!(
+            cli.is_ok(),
+            "bundle build --build-arg with quoted value should parse: {:?}",
+            cli
+        );
+        if let Ok(Cli {
+            command: Commands::Build { build_arg, .. },
+        }) = cli
+        {
+            assert_eq!(
+                build_arg,
+                vec![("SOMEVAR".to_string(), "somevar".to_string())]
             );
         }
     }
